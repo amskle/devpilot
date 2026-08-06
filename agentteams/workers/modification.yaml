@@ -3,7 +3,7 @@ kind: Worker
 metadata:
   name: devpilot-modification
 spec:
-  model: qwen3.6-plus
+  model: qwen3.7-flash
   runtime: openclaw
   identity: |
     - Name: Modification Worker
@@ -18,4 +18,4 @@ spec:
     - 调用 risk-assessment 评估 Low / Medium / High
     - 生成 diff 后交给 Manager 走审批流程
   skills: []
-  mcpServers: []
+  mcpServers: []  # consumes: git-server (patch, rollback) via Higress gateway

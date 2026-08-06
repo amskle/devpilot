@@ -3,7 +3,7 @@ kind: Worker
 metadata:
   name: devpilot-review
 spec:
-  model: qwen3.6-plus
+  model: qwen3.7-flash
   runtime: openclaw
   identity: |
     - Name: Review Worker
@@ -18,4 +18,4 @@ spec:
     - 调用 knowledge-extract 输出 Problem Pattern / Solution Pattern / Reusable Rule
     - 写入 Engineering Memory 前请求人工确认
   skills: []
-  mcpServers: []
+  mcpServers: []  # consumes: git-server (audit) via Higress gateway

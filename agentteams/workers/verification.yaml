@@ -3,7 +3,7 @@ kind: Worker
 metadata:
   name: devpilot-verification
 spec:
-  model: qwen3.6-plus
+  model: qwen3.7-flash
   runtime: openclaw
   identity: |
     - Name: Verification Worker
@@ -18,4 +18,4 @@ spec:
     - 输出 Verification Report，标注成功或失败原因
     - 失败时触发回滚请求
   skills: []
-  mcpServers: []
+  mcpServers: []  # consumes: testing-server (detect, run) via Higress gateway

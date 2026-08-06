@@ -1,0 +1,78 @@
+{
+  "task_id": "89e250a5",
+  "repo": "demo/sample_python",
+  "timestamp": "2026-08-06T10:30:00+08:00",
+  "pipeline": {
+    "stages": [
+      {"name": "diagnose", "status": "success", "duration_ms": 1200, "issues_found": 3},
+      {"name": "plan", "status": "success", "duration_ms": 800, "items": 3},
+      {"name": "approve", "status": "approved", "duration_ms": 50, "mode": "auto"},
+      {"name": "modify", "status": "success", "duration_ms": 350, "files_changed": 1, "fixes_applied": 2},
+      {"name": "verify", "status": "passed", "duration_ms": 2100, "tests_run": 1, "tests_passed": 1, "exit_code": 0},
+      {"name": "commit", "status": "success", "duration_ms": 120},
+      {"name": "review", "status": "success", "duration_ms": 900, "patterns_extracted": 3},
+      {"name": "report", "status": "success", "duration_ms": 80}
+    ],
+    "total_duration_ms": 5600,
+    "final_status": "completed"
+  },
+  "issues": [
+    {
+      "id": "mutable-default-argument",
+      "severity": "Medium",
+      "location": "app.py:1",
+      "confidence": 0.90,
+      "auto_fixable": true,
+      "fixed": true
+    },
+    {
+      "id": "bare-except",
+      "severity": "Medium",
+      "location": "app.py:9",
+      "confidence": 0.95,
+      "auto_fixable": true,
+      "fixed": true
+    },
+    {
+      "id": "hardcoded-secret",
+      "severity": "High",
+      "location": "app.py:13",
+      "confidence": 0.80,
+      "auto_fixable": false,
+      "fixed": false,
+      "action": "reported_only"
+    }
+  ],
+  "verification": {
+    "tests_run": 1,
+    "tests_passed": 1,
+    "tests_failed": 0,
+    "exit_code": 0,
+    "passed": true
+  },
+  "knowledge": {
+    "patterns_extracted": [
+      "mutable-default-argument",
+      "bare-except",
+      "hardcoded-secret"
+    ],
+    "rules_generated": 3
+  },
+  "trace_spans": [
+    {"span_id": "span-001", "parent": null, "name": "pipeline.run", "duration_ms": 5600},
+    {"span_id": "span-002", "parent": "span-001", "name": "skill:bug-detection", "duration_ms": 600},
+    {"span_id": "span-003", "parent": "span-001", "name": "skill:patch-generate", "duration_ms": 200},
+    {"span_id": "span-004", "parent": "span-001", "name": "skill:risk-assessment", "duration_ms": 150},
+    {"span_id": "span-005", "parent": "span-001", "name": "skill:test-execution", "duration_ms": 2100},
+    {"span_id": "span-006", "parent": "span-001", "name": "skill:knowledge-extract", "duration_ms": 900}
+  ],
+  "metrics": {
+    "issues_detected": 3,
+    "issues_fixed": 2,
+    "fix_rate": 0.667,
+    "false_positive_rate": 0.0,
+    "verification_pass_rate": 1.0,
+    "auto_approval_rate": 1.0,
+    "rollback_triggered": false
+  }
+}

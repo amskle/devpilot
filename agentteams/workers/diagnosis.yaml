@@ -3,7 +3,7 @@ kind: Worker
 metadata:
   name: devpilot-diagnosis
 spec:
-  model: qwen3.6-plus
+  model: qwen3.7-flash
   runtime: openclaw
   identity: |
     - Name: Diagnosis Worker
@@ -17,4 +17,4 @@ spec:
     - 调用 project-context / code-analysis / bug-detection / security-scan
     - 合并检测结果，输出 issue、severity、location、confidence
   skills: []  # custom skills will be injected via worker package
-  mcpServers: []  # MCP servers will be registered at Higress gateway
+  mcpServers: []  # consumes: git-server (status, snapshot) via Higress gateway

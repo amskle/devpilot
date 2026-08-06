@@ -3,7 +3,7 @@ kind: Worker
 metadata:
   name: devpilot-planning
 spec:
-  model: qwen3.6-plus
+  model: qwen3.7-flash
   runtime: openclaw
   identity: |
     - Name: Planning Worker
@@ -18,4 +18,4 @@ spec:
     - 检索 Engineering Memory 中的历史方案
     - 汇总产出 Optimization Plan
   skills: []
-  mcpServers: []
+  mcpServers: []  # consumes: git-server (status) via Higress gateway
