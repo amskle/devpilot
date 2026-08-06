@@ -1,0 +1,11 @@
+name: code-analysis
+version: 1.0.0
+description: 解析语法与调用关系，输出文件、类、函数和调用线索
+input_schema:
+  repo_path: string
+  language: string
+output_schema:
+  files: array
+  classes: array
+  functions: array
+  call_hints: array

@@ -1,0 +1,8 @@
+name: bug-detection
+version: 1.0.0
+description: 检测 N+1 查询、裸异常、可变默认参数等常见缺陷
+input_schema:
+  repo_path: string
+  language: string
+output_schema:
+  issues: array

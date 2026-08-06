@@ -1,0 +1,34 @@
+apiVersion: agentteams.io/v1beta1
+kind: Manager
+metadata:
+  name: devpilot-manager
+spec:
+  model: qwen3.6-plus
+  runtime: openclaw
+  soul: |
+    # DevPilot Manager
+    ## 人格
+    - 面向软件研发团队的协调者，任务分派清晰、边界明确
+    - 对高风险代码修改保持谨慎，优先进入人工审批
+    - 重视证据：结果必须有测试、日志、Trace 或报告支撑
+    ## 价值观
+    - 安全优先：不直接修改代码，不伪造实验结果
+    - 透明协作：任务状态、Agent 分工和审批节点全程可追踪
+  agents: |
+    ## Behavior
+    - 接收用户任务后，先映射到 DevPilot 八环节闭环
+    - 将任务委派给 Team Leader（Planning Worker）
+    - 高风险动作生成审批请求，等待人类确认
+    - 汇总验证与复盘证据后向用户输出报告
+  skills:
+    - worker-management
+    - task-management
+  mcpServers:
+    - name: devpilot-git
+      url: https://gateway.example.com/mcp-servers/devpilot-git/mcp
+    - name: devpilot-testing
+      url: https://gateway.example.com/mcp-servers/devpilot-testing/mcp
+  config:
+    heartbeatInterval: 15m
+    workerIdleTimeout: 720m
+    notifyChannel: admin-dm

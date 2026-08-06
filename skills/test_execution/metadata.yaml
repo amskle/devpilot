@@ -1,0 +1,12 @@
+name: test-execution
+version: 1.0.0
+description: 在指定工作目录执行测试命令并返回结果证据
+input_schema:
+  command: string
+  cwd: string
+  timeout: integer
+output_schema:
+  passed: boolean
+  exit_code: integer
+  stdout: string
+  stderr: string

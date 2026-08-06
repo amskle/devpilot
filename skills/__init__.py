@@ -1,0 +1,1 @@
+# DevPilot core skills package.

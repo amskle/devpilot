@@ -1,0 +1,10 @@
+apiVersion: agentteams.io/v1beta1
+kind: Human
+metadata:
+  name: code-reviewer
+spec:
+  displayName: 代码审批人
+  email: reviewer@example.com
+  permissionLevel: 2
+  accessibleTeams: [devpilot-team]
+  note: 负责高风险代码修改的审批与复盘规则审核

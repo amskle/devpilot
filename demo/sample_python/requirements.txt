@@ -1,0 +1,1 @@
+# DevPilot sample project uses only the Python standard library.

@@ -1,0 +1,11 @@
+name: project-context
+version: 1.0.0
+description: 识别项目技术栈、结构、配置与构建方式
+input_schema:
+  repo_path: string
+output_schema:
+  project_type: string
+  tech_stack: array
+  build_tool: string
+  structure: array
+  configs: array

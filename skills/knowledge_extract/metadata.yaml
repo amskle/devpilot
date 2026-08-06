@@ -1,0 +1,11 @@
+name: knowledge-extract
+version: 1.0.0
+description: 从复盘笔记中提取可复用问题模式、解决方案与规则
+input_schema:
+  notes: string
+output_schema:
+  problem_pattern: string
+  solution_pattern: string
+  reusable_rule: string
+  confidence: number
+  tags: array

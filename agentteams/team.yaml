@@ -1,0 +1,13 @@
+apiVersion: agentteams.io/v1beta1
+kind: Team
+metadata:
+  name: devpilot-team
+spec:
+  description: 软件缺陷发现、优化、验证与经验沉淀团队
+  leader:
+    name: devpilot-planning
+  workers:
+    - name: devpilot-diagnosis
+    - name: devpilot-modification
+    - name: devpilot-verification
+    - name: devpilot-review

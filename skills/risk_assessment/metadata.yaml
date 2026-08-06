@@ -1,0 +1,9 @@
+name: risk-assessment
+version: 1.0.0
+description: 基于 diff 内容评估代码修改风险等级
+input_schema:
+  diff: string
+output_schema:
+  level: string
+  score: number
+  reasons: array

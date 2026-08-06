@@ -1,0 +1,7 @@
+name: security-scan
+version: 1.0.0
+description: 检测 SQL 拼接、密钥泄露、危险执行与权限风险
+input_schema:
+  repo_path: string
+output_schema:
+  issues: array

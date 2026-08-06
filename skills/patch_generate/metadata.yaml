@@ -1,0 +1,11 @@
+name: patch-generate
+version: 1.0.0
+description: 根据替换规则生成 Git Diff，默认不写盘
+input_schema:
+  target_file: string
+  replacements: array
+  apply: boolean
+output_schema:
+  diff: string
+  new_content: string
+  applied: boolean
