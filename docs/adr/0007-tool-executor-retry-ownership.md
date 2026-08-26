@@ -37,6 +37,7 @@ ToolExecutor 是唯一的工具执行和工具级重试入口。AgentRunner、�
 - 同一个逻辑工具调用只有一个重试所有者。
 - ToolSpec 必须声明重试策略、幂等性、错误类别和超时。
 - Node Failure Router 只决定节点级处置，不执行工具级重试。
+- Phase 1 的已完成 `operation_id` 仅保存在 ToolExecutor 进程内；进程重启后的工具结果去重不作保证。具有外部副作用的控制命令使用 SQLite 持久幂等键，持久化工具幂等将在后续可靠执行存储中补齐。
 
 ## 验收条件
 

@@ -1,9 +1,12 @@
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from devpilot.domain.state import create_initial_state
+from devpilot.clock import FrozenClock
+from devpilot.domain.models import WorkspaceRef
 from devpilot.errors import StateConflictError
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore
 from devpilot.workspace import WorkspaceManager
@@ -43,13 +46,26 @@ def test_event_first_projection_uses_optimistic_lock_and_reconcile(tmp_path):
     control.create_task(state)
     changed = dict(state)
     changed["status"] = "RUNNING"
-    advanced = control.transition(changed, expected_revision=0, event_type="advanced")
+    advanced = control.transition(
+        changed,
+        expected_revision=0,
+        event_type="advanced",
+        payload={"apiKey": "top-secret", "nested": {"access-token": "also-secret"}},
+    )
     with pytest.raises(StateConflictError):
         control.transition(changed, expected_revision=0, event_type="stale")
     assert control.reconcile(state) is True
     projection = control.get_task("task")
     assert projection["state_revision"] == 0
     assert any(item["event_type"] == "projection_reconciled" for item in control.events("task"))
+    advanced_event = next(item for item in control.events("task") if item["event_type"] == "advanced")
+    assert advanced_event["payload"] == {
+        "apiKey": "[REDACTED]",
+        "nested": {"access-token": "[REDACTED]"},
+    }
+    listed = control.list_tasks()
+    assert listed[0]["state"]["task_id"] == "task"
+    assert "state_json" not in listed[0]
     control.close()
 
 
@@ -72,3 +88,22 @@ def test_workspace_isolated_clone_and_git_identity(tmp_path):
     assert subprocess.run(["git", "-C", str(worktree), "config", "user.name"], capture_output=True, text=True).stdout.strip() == "DevPilot"
     with pytest.raises(Exception):
         manager.resolve_path(workspace, "../escape.txt")
+
+
+def test_workspace_lease_owner_and_expiry_are_enforced(tmp_path):
+    clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    manager = WorkspaceManager(tmp_path / "workspaces", clock)
+    workspace = WorkspaceRef(
+        workspace_id="ws",
+        repository_id="repo",
+        worktree_ref=str(tmp_path),
+        baseline_revision="a",
+        current_revision="a",
+        lease_owner="run-a",
+        lease_expires_at="2026-01-01T00:00:01+00:00",
+    )
+    with pytest.raises(StateConflictError, match="lease owner"):
+        manager.validate_lease(workspace, "run-b")
+    clock.advance(seconds=2)
+    with pytest.raises(StateConflictError, match="lease expired"):
+        manager.validate_lease(workspace, "run-a")

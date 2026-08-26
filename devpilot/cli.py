@@ -51,19 +51,23 @@ def build_parser() -> argparse.ArgumentParser:
     cancel = commands.add_parser("cancel")
     cancel.add_argument("--task-id", required=True)
     cancel.add_argument("--expected-revision", type=int, required=True)
+    cancel.add_argument("--idempotency-key", default=None)
 
     rollback = commands.add_parser("rollback")
     rollback.add_argument("--task-id", required=True)
     rollback.add_argument("--recovery-point-id", required=True)
     rollback.add_argument("--expected-revision", type=int, required=True)
+    rollback.add_argument("--idempotency-key", default=None)
 
     restore = commands.add_parser("restore")
     restore.add_argument("--task-id", required=True)
     restore.add_argument("--recovery-point-id", required=True)
+    restore.add_argument("--idempotency-key", default=None)
 
     resume = commands.add_parser("resume")
     resume.add_argument("--task-id", required=True)
     resume.add_argument("--expected-revision", type=int, required=True)
+    resume.add_argument("--idempotency-key", default=None)
 
     admin = groups.add_parser("admin")
     admin_commands = admin.add_subparsers(dest="command", required=True)
@@ -87,7 +91,10 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "status":
             state = service.get_state(args.task_id)
         elif args.command == "resume":
-            state = service.resume(args.task_id, args.expected_revision)
+            key = args.idempotency_key or str(uuid.uuid4())
+            if args.idempotency_key is None:
+                print(f"idempotency_key={key}", file=sys.stderr)
+            state = service.resume(args.task_id, args.expected_revision, idempotency_key=key)
         elif args.command in {"approve", "reject"}:
             key = args.idempotency_key or str(uuid.uuid4())
             if args.idempotency_key is None:
@@ -102,11 +109,25 @@ def main(argv: list[str] | None = None) -> None:
                 idempotency_key=key,
             )
         elif args.command == "cancel":
-            state = service.cancel(args.task_id, args.expected_revision)
+            key = args.idempotency_key or str(uuid.uuid4())
+            if args.idempotency_key is None:
+                print(f"idempotency_key={key}", file=sys.stderr)
+            state = service.cancel(args.task_id, args.expected_revision, idempotency_key=key)
         elif args.command == "rollback":
-            state = service.rollback(args.task_id, args.recovery_point_id, args.expected_revision)
+            key = args.idempotency_key or str(uuid.uuid4())
+            if args.idempotency_key is None:
+                print(f"idempotency_key={key}", file=sys.stderr)
+            state = service.rollback(
+                args.task_id,
+                args.recovery_point_id,
+                args.expected_revision,
+                idempotency_key=key,
+            )
         elif args.command == "restore":
-            state = service.restore(args.task_id, args.recovery_point_id)
+            key = args.idempotency_key or str(uuid.uuid4())
+            if args.idempotency_key is None:
+                print(f"idempotency_key={key}", file=sys.stderr)
+            state = service.restore(args.task_id, args.recovery_point_id, idempotency_key=key)
         else:  # pragma: no cover
             raise AssertionError(args.command)
         _print_state(state)

@@ -69,7 +69,7 @@ class ExecutionBudget(StrictModel):
     max_total_tokens: int = 100_000
     max_cost: str | None = None
     cost_currency: str = "USD"
-    max_active_seconds: int = 1800
+    max_active_seconds: int = Field(default=1800, ge=0)
     iterations_used: int = 0
     plan_revisions_used: int = 0
     rollbacks_used: int = 0
@@ -80,7 +80,7 @@ class ExecutionBudget(StrictModel):
     completion_tokens_used: int = 0
     cost_used: str = "0.0000"
     pricing_snapshot_ref: str | None = None
-    active_seconds_used: int = 0
+    active_seconds_used: int = Field(default=0, ge=0)
 
     @field_validator("max_cost", "cost_used")
     @classmethod

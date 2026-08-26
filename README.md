@@ -3,7 +3,6 @@
 [![CI](https://github.com/amskle/devpilot-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/amskle/devpilot-infra/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-37%20passed-brightgreen.svg)](#测试)
 
 > 以 **LangGraph** 为唯一工作流编排器、以 DevPilot Agent Runtime 为受控智能执行层的软件研发 Agent 平台。
 
@@ -243,7 +242,7 @@ tests/            端到端冒烟测试
 python -m pytest skills tests -q
 ```
 
-测试覆盖 8 个 Skill、State 序列化、Fake Gateway、Tool 权限/重试、SQLite 对账、工作区隔离、审批过期、Checkpoint 恢复和端到端闭环，当前 37 项全部通过。详细说明见 [docs/testing.md](docs/testing.md)。
+测试覆盖 8 个 Skill、State 序列化、Fake Gateway、Tool 权限/重试、SQLite 对账、工作区隔离、审批过期、Checkpoint 恢复、预算核算和端到端闭环。测试数量以 CI 实际结果为准，详细说明见 [docs/testing.md](docs/testing.md)。
 
 ## 运行证据
 

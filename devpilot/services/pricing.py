@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from devpilot.services.storage import ArtifactStore
 
@@ -30,8 +31,26 @@ class PricingCatalog:
             }
         )
 
-    def snapshot(self, artifacts: ArtifactStore, task_id: str, run_id: str) -> dict:
+    @classmethod
+    def from_snapshot(cls, value: dict[str, Any]) -> tuple["PricingCatalog", str | None]:
+        catalog = cls(
+            {
+                name: ModelPrice(Decimal(item["prompt_per_million"]), Decimal(item["completion_per_million"]))
+                for name, item in value.get("models", {}).items()
+            }
+        )
+        return catalog, value.get("selected_model")
+
+    def snapshot(
+        self,
+        artifacts: ArtifactStore,
+        task_id: str,
+        run_id: str,
+        *,
+        selected_model: str,
+    ) -> dict:
         value = {
+            "selected_model": selected_model,
             "models": {
                 name: {
                     "prompt_per_million": str(price.prompt_per_million),

@@ -15,7 +15,15 @@ from langgraph.types import Command
 from devpilot.agents.model_gateway import LazyOpenAICompatibleGateway, ModelGateway
 from devpilot.agents.runner import AgentRunner
 from devpilot.clock import Clock, SystemClock
-from devpilot.domain.models import ApprovalRequest, ExecutionBudget, FailureRecord, RecoveryPoint, TaskStatus, WorkspaceRef
+from devpilot.domain.models import (
+    ApprovalRequest,
+    ExecutionBudget,
+    FailureRecord,
+    ModelProfile,
+    RecoveryPoint,
+    TaskStatus,
+    WorkspaceRef,
+)
 from devpilot.domain.state import GraphState, create_initial_state, validate_state
 from devpilot.errors import BudgetExceededError, PolicyDeniedError, StateConflictError
 from devpilot.orchestration.graph import GraphRuntime, build_graph
@@ -44,8 +52,9 @@ class TaskService:
         self.control = SQLiteControlStore(self.data_dir / "control.sqlite", self.clock)
         self.workspace_manager = WorkspaceManager(self.data_dir / "workspaces", self.clock)
         self.tools = ToolExecutor(build_default_registry())
+        self.model_name = model or "gpt-5-mini"
         self.gateway = gateway or LazyOpenAICompatibleGateway(
-            model=model or "gpt-5-mini", base_url=base_url
+            model=self.model_name, base_url=base_url
         )
         self.agents = AgentRunner(self.gateway, self.tools)
         self.approval_ttl_seconds = approval_ttl_seconds
@@ -61,7 +70,36 @@ class TaskService:
     def _config(run_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": run_id}}
 
-    def _runtime(self, *, source_repo: Path | None, request: str, revision: str = "HEAD") -> GraphRuntime:
+    def _pricing_context(self, state: GraphState) -> tuple[PricingCatalog | None, str]:
+        snapshot_ref = state["execution_budget"].get("pricing_snapshot_ref")
+        if snapshot_ref is None:
+            return None, self.model_name
+        if str(snapshot_ref).startswith("art_"):
+            # Compatibility for checkpoints created before the snapshot stored
+            # its full content hash. Such tasks did not perform cost settlement.
+            return None, self.model_name
+        raw = self.artifacts.read_text(
+            state["task_id"],
+            state["run_id"],
+            {"sha256": snapshot_ref},
+        )
+        catalog, selected_model = PricingCatalog.from_snapshot(json.loads(raw))
+        return catalog, selected_model or self.model_name
+
+    def _runtime(
+        self,
+        *,
+        source_repo: Path | None,
+        request: str,
+        revision: str = "HEAD",
+        state: GraphState | None = None,
+        pricing_catalog: PricingCatalog | None = None,
+        model_name: str | None = None,
+    ) -> GraphRuntime:
+        selected_model = model_name or self.model_name
+        selected_catalog = pricing_catalog
+        if state is not None and selected_catalog is None:
+            selected_catalog, selected_model = self._pricing_context(state)
         return GraphRuntime(
             source_repo=source_repo,
             request=request,
@@ -74,6 +112,8 @@ class TaskService:
             approval_ttl_seconds=self.approval_ttl_seconds,
             verification_command=self.verification_command,
             revision=revision,
+            model_profile=ModelProfile(provider="openai-compatible", model=selected_model),
+            pricing_catalog=selected_catalog,
         )
 
     def _request_from_state(self, state: GraphState, *, artifact_run_id: str | None = None) -> str:
@@ -130,12 +170,18 @@ class TaskService:
                 occurred_at=self.clock.now().isoformat(),
             )
             failed = copy.deepcopy(recovered)
+            failure_budget = getattr(exc, "execution_budget", None)
             failed.update(
                 {
                     "status": status,
                     "pause_reason": error_code,
                     "current_node": "node_failure_router",
                     "latest_failure": failure.to_state_dict(),
+                    "execution_budget": (
+                        ExecutionBudget.from_state_dict(failure_budget).to_state_dict()
+                        if isinstance(failure_budget, dict)
+                        else recovered["execution_budget"]
+                    ),
                 }
             )
             failed = self.control.transition(
@@ -157,24 +203,36 @@ class TaskService:
         *,
         revision: str = "HEAD",
         budget: ExecutionBudget | None = None,
-        model: str = "default",
+        model: str | None = None,
     ) -> GraphState:
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         run_id = f"run_{uuid.uuid4().hex[:16]}"
         selected_budget = budget or ExecutionBudget()
+        selected_model = model or self.model_name
         catalog = PricingCatalog.from_file(self.data_dir / "pricing" / "catalog.json")
-        if selected_budget.max_cost is not None and model not in catalog.entries:
-            raise ValueError(f"max_cost requires pricing data for model: {model}")
+        if selected_budget.max_cost is not None and selected_model not in catalog.entries:
+            raise ValueError(f"max_cost requires pricing data for model: {selected_model}")
         self.workspace_manager.validate_source(repo.resolve(), revision)
         state = create_initial_state(task_id, run_id, budget=selected_budget)
         request_ref = self.artifacts.put_text(task_id, run_id, "task_request", request)
         state["context_delta_ref"] = request_ref.to_state_dict()
         if selected_budget.max_cost is not None:
-            snapshot = catalog.snapshot(self.artifacts, task_id, run_id)
-            state["execution_budget"]["pricing_snapshot_ref"] = snapshot["artifact_id"]
+            snapshot = catalog.snapshot(
+                self.artifacts,
+                task_id,
+                run_id,
+                selected_model=selected_model,
+            )
+            state["execution_budget"]["pricing_snapshot_ref"] = snapshot["sha256"]
         state = validate_state(state)
         self.control.create_task(state)
-        runtime = self._runtime(source_repo=repo.resolve(), request=request, revision=revision)
+        runtime = self._runtime(
+            source_repo=repo.resolve(),
+            request=request,
+            revision=revision,
+            pricing_catalog=catalog if selected_budget.max_cost is not None else None,
+            model_name=selected_model,
+        )
         graph = build_graph(runtime, self.checkpointer)
         return self._invoke(graph, run_id, state)
 
@@ -194,7 +252,10 @@ class TaskService:
         projected = validate_state(projection["state"])
         request = self._request_from_state(projected)
         checkpoint_run_id = projection.get("checkpoint_run_id", projected["run_id"])
-        graph, state = self._checkpoint_state(checkpoint_run_id, self._runtime(source_repo=None, request=request))
+        graph, state = self._checkpoint_state(
+            checkpoint_run_id,
+            self._runtime(source_repo=None, request=request, state=projected),
+        )
         if check_expiry:
             state = self._expire_approval_if_needed(graph, state)
         return state
@@ -206,8 +267,16 @@ class TaskService:
         if self.clock.now() < datetime.fromisoformat(approval.expires_at):
             return state
         updated = copy.deepcopy(state)
+        proposal = updated.get("patch_proposal")
+        if proposal is not None:
+            proposal = {**proposal, "status": "INVALIDATED"}
         updated.update(
-            {"status": TaskStatus.CANCELLED.value, "pause_reason": "APPROVAL_EXPIRED", "pending_approval": None}
+            {
+                "status": TaskStatus.CANCELLED.value,
+                "pause_reason": "APPROVAL_EXPIRED",
+                "pending_approval": None,
+                "patch_proposal": proposal,
+            }
         )
         updated = self.control.transition(
             validate_state(updated),
@@ -247,7 +316,7 @@ class TaskService:
         if received != expected:
             raise ValueError("approval target does not match pending patch")
         request = self._request_from_state(state)
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=state), self.checkpointer)
         result = self._invoke(
             graph,
             state["run_id"],
@@ -265,24 +334,59 @@ class TaskService:
             self.control.save_idempotent_result(task_id, operation, idempotency_key, result)
         return result
 
-    def cancel(self, task_id: str, expected_revision: int) -> GraphState:
+    def cancel(
+        self,
+        task_id: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, "cancel", idempotency_key)
+            if cached:
+                return validate_state(cached)
         state = self.get_state(task_id)
         if state["state_revision"] != expected_revision:
             raise StateConflictError(f"expected state_revision {expected_revision}, actual {state['state_revision']}")
         if state["status"] in {TaskStatus.COMPLETED.value, TaskStatus.COMPLETED_NO_CHANGES.value, TaskStatus.CANCELLED.value}:
+            if idempotency_key:
+                self.control.save_idempotent_result(task_id, "cancel", idempotency_key, state)
             return state
         request = self._request_from_state(state)
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=state), self.checkpointer)
         updated = copy.deepcopy(state)
-        updated.update({"status": TaskStatus.CANCELLED.value, "pause_reason": "USER_CANCELLED", "pending_approval": None})
+        proposal = updated.get("patch_proposal")
+        if proposal is not None:
+            proposal = {**proposal, "status": "INVALIDATED"}
+        updated.update(
+            {
+                "status": TaskStatus.CANCELLED.value,
+                "pause_reason": "USER_CANCELLED",
+                "pending_approval": None,
+                "patch_proposal": proposal,
+            }
+        )
         updated = self.control.transition(
             validate_state(updated), expected_revision=expected_revision, event_type="task_cancelled", payload={}
         )
         graph.update_state(self._config(state["run_id"]), updated)
         self.control.confirm_checkpoint(task_id, state["run_id"], updated["state_revision"])
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, "cancel", idempotency_key, updated)
         return updated
 
-    def rollback(self, task_id: str, recovery_point_id: str, expected_revision: int) -> GraphState:
+    def rollback(
+        self,
+        task_id: str,
+        recovery_point_id: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, "rollback", idempotency_key)
+            if cached:
+                return validate_state(cached)
         state = self.get_state(task_id)
         if state["state_revision"] != expected_revision:
             raise StateConflictError(f"expected state_revision {expected_revision}, actual {state['state_revision']}")
@@ -295,9 +399,9 @@ class TaskService:
         budget = ExecutionBudget.from_state_dict(state["execution_budget"])
         if budget.rollbacks_used >= budget.max_rollbacks:
             raise ValueError("rollback budget exhausted")
-        workspace = self.workspace_manager.rollback(
-            WorkspaceRef.from_state_dict(state["workspace_ref"] or {}), recovery.repository_snapshot_id
-        )
+        workspace_ref = WorkspaceRef.from_state_dict(state["workspace_ref"] or {})
+        self.workspace_manager.validate_lease(workspace_ref, state["run_id"])
+        workspace = self.workspace_manager.rollback(workspace_ref, recovery.repository_snapshot_id)
         updated = copy.deepcopy(state)
         updated.update(
             {
@@ -310,16 +414,28 @@ class TaskService:
             }
         )
         request = self._request_from_state(state)
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=state), self.checkpointer)
         updated = self.control.transition(
             validate_state(updated), expected_revision=expected_revision, event_type="rollback_completed",
             payload={"recovery_point_id": recovery_point_id},
         )
         graph.update_state(self._config(state["run_id"]), updated)
         self.control.confirm_checkpoint(task_id, state["run_id"], updated["state_revision"])
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, "rollback", idempotency_key, updated)
         return updated
 
-    def restore(self, task_id: str, recovery_point_id: str) -> GraphState:
+    def restore(
+        self,
+        task_id: str,
+        recovery_point_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, "restore", idempotency_key)
+            if cached:
+                return validate_state(cached)
         old = self.get_state(task_id)
         if not old["active_recovery_point_ref"]:
             raise ValueError("task has no active recovery point")
@@ -328,9 +444,9 @@ class TaskService:
         if recovery.recovery_point_id != recovery_point_id:
             raise ValueError("recovery point does not match active recovery point")
         request = self._request_from_state(old)
-        workspace = self.workspace_manager.rollback(
-            WorkspaceRef.from_state_dict(old["workspace_ref"] or {}), recovery.repository_snapshot_id
-        )
+        workspace_ref = WorkspaceRef.from_state_dict(old["workspace_ref"] or {})
+        self.workspace_manager.validate_lease(workspace_ref, old["run_id"])
+        workspace = self.workspace_manager.rollback(workspace_ref, recovery.repository_snapshot_id)
         new_run_id = f"run_{uuid.uuid4().hex[:16]}"
         restored = copy.deepcopy(old)
         restored.update(
@@ -342,7 +458,10 @@ class TaskService:
                 "pause_reason": None,
                 "patch_proposal": None,
                 "verification": None,
+                "diagnosis": None,
+                "review": None,
                 "latest_failure": None,
+                "progress_window": {"entries": [], "no_progress_rounds": 0},
                 "pending_approval": None,
             }
         )
@@ -355,6 +474,22 @@ class TaskService:
             if ref:
                 content = self.artifacts.read_bytes(task_id, old["run_id"], ref)
                 restored[field] = self.artifacts.put_bytes(task_id, new_run_id, kind, content).to_state_dict()
+        pricing_ref = old["execution_budget"].get("pricing_snapshot_ref")
+        if pricing_ref and not str(pricing_ref).startswith("art_"):
+            pricing_content = self.artifacts.read_bytes(
+                task_id,
+                old["run_id"],
+                {"sha256": pricing_ref},
+            )
+            copied_pricing = self.artifacts.put_bytes(
+                task_id,
+                new_run_id,
+                "pricing_snapshot",
+                pricing_content,
+            )
+            restored_budget = copy.deepcopy(restored["execution_budget"])
+            restored_budget["pricing_snapshot_ref"] = copied_pricing.sha256
+            restored["execution_budget"] = restored_budget
         recovery_content = self.artifacts.read_bytes(
             task_id, old["run_id"], {"sha256": old["active_recovery_point_ref"]}
         )
@@ -365,17 +500,30 @@ class TaskService:
             validate_state(restored), expected_revision=old["state_revision"], event_type="run_restored",
             payload={"parent_run_id": old["run_id"], "recovery_point_id": recovery_point_id},
         )
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
-        return self._invoke(graph, new_run_id, restored)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=restored), self.checkpointer)
+        result = self._invoke(graph, new_run_id, restored)
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, "restore", idempotency_key, result)
+        return result
 
-    def resume(self, task_id: str, expected_revision: int) -> GraphState:
+    def resume(
+        self,
+        task_id: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, "resume", idempotency_key)
+            if cached:
+                return validate_state(cached)
         state = self.get_state(task_id)
         if state["state_revision"] != expected_revision:
             raise StateConflictError(f"expected state_revision {expected_revision}, actual {state['state_revision']}")
         if state["status"] != TaskStatus.WAITING_HUMAN_INTERVENTION.value:
             raise StateConflictError("task is not waiting for human intervention")
         request = self._request_from_state(state)
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=state), self.checkpointer)
         updated = copy.deepcopy(state)
         updated.update({"status": TaskStatus.RUNNING.value, "pause_reason": None})
         updated = self.control.transition(
@@ -384,7 +532,10 @@ class TaskService:
         )
         graph.update_state(self._config(state["run_id"]), updated, as_node="failure_router")
         self.control.confirm_checkpoint(task_id, state["run_id"], updated["state_revision"])
-        return self._invoke(graph, state["run_id"], Command(goto="diagnosis"))
+        result = self._invoke(graph, state["run_id"], Command(goto="diagnosis"))
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, "resume", idempotency_key, result)
+        return result
 
     def reconcile(self, task_id: str) -> bool:
         projection = self.control.get_task(task_id)
@@ -392,7 +543,7 @@ class TaskService:
             raise KeyError(task_id)
         projected = validate_state(projection["state"])
         request = self._request_from_state(projected)
-        graph = build_graph(self._runtime(source_repo=None, request=request), self.checkpointer)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=projected), self.checkpointer)
         snapshot = graph.get_state(self._config(projection.get("checkpoint_run_id", projected["run_id"])))
         if not snapshot.values:
             raise KeyError(f"checkpoint not found for task: {task_id}")

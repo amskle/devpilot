@@ -4,7 +4,7 @@ import hashlib
 import os
 import subprocess
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from devpilot.clock import Clock, SystemClock
@@ -77,12 +77,27 @@ class WorkspaceManager:
         if actual != workspace.current_revision:
             raise StateConflictError(f"workspace revision changed: expected {workspace.current_revision}, actual {actual}")
 
+    def validate_lease(self, workspace: WorkspaceRef, expected_owner: str | None = None) -> None:
+        if expected_owner is not None and workspace.lease_owner != expected_owner:
+            raise StateConflictError(
+                f"workspace lease owner changed: expected {expected_owner}, actual {workspace.lease_owner}"
+            )
+        if self.clock.now() >= datetime.fromisoformat(workspace.lease_expires_at):
+            raise StateConflictError(f"workspace lease expired: {workspace.workspace_id}")
+
     def apply_patch(self, workspace: WorkspaceRef, patch: str, expected_hash: str) -> WorkspaceRef:
         actual_hash = hashlib.sha256(patch.encode("utf-8")).hexdigest()
         if actual_hash != expected_hash:
             raise StateConflictError("patch hash mismatch")
+        self.validate_lease(workspace)
         self.validate_revision(workspace)
         root = Path(workspace.worktree_ref)
+        tracked_changes = self._git(root, "status", "--porcelain", "--untracked-files=no")
+        if tracked_changes:
+            raise StateConflictError(f"workspace has unexpected tracked changes:\n{tracked_changes}")
+        # Verification may leave untracked bytecode and build outputs. They
+        # must not be captured by the next patch commit or shadow new source.
+        self._git(root, "clean", "-fdx")
         self._git(root, "apply", "--check", "-", input_text=patch)
         self._git(root, "apply", "-", input_text=patch)
         self._git(root, "add", "-A")
@@ -108,6 +123,8 @@ class WorkspaceManager:
         root = Path(workspace.worktree_ref).resolve()
         if root != self.root and self.root not in root.parents:
             raise PolicyDeniedError("refusing to clean a workspace outside the DevPilot workspace root")
+        self.validate_lease(workspace)
+        self.validate_revision(workspace)
         current = self._git(root, "rev-parse", "HEAD")
         if current != revision:
             self._git(root, "reset", "--hard", revision)

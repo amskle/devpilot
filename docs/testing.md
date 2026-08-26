@@ -6,7 +6,7 @@
 python -m pytest skills tests -q
 ```
 
-当前 37 项覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、审批中断/过期、Checkpoint/Restore、Progress 双指纹、异常规范化和旧入口兼容。
+当前测试覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、审批中断/过期、Checkpoint/Restore、Progress 双指纹、费用与活跃时间预算、控制命令幂等、异常规范化和旧入口兼容。测试数量以 CI 实际结果为准。
 
 ## 2. Phase 1 CLI
 

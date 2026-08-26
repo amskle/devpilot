@@ -19,6 +19,7 @@ from devpilot.domain.models import (
     ApprovalRequest,
     ExecutionBudget,
     FailureRecord,
+    ModelProfile,
     PatchProposal,
     RecoveryPoint,
     TaskStatus,
@@ -27,6 +28,7 @@ from devpilot.domain.models import (
 from devpilot.domain.progress import evaluate_progress_signals
 from devpilot.domain.state import GraphState, replace_progress_window, validate_state
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore
+from devpilot.services.pricing import PricingCatalog
 from devpilot.tools.executor import ToolExecutor
 from devpilot.workspace import WorkspaceManager
 
@@ -44,6 +46,8 @@ class GraphRuntime:
     approval_ttl_seconds: int = 86_400
     verification_command: str | None = None
     revision: str = "HEAD"
+    model_profile: ModelProfile | None = None
+    pricing_catalog: PricingCatalog | None = None
 
 
 def _merge_transition(
@@ -81,6 +85,12 @@ def _workspace(state: GraphState) -> WorkspaceRef:
     if state["workspace_ref"] is None:
         raise RuntimeError("workspace is not initialized")
     return WorkspaceRef.from_state_dict(state["workspace_ref"])
+
+
+def _raise_agent_error(invocation: Any) -> None:
+    error = RuntimeError(invocation.result.error)
+    error.execution_budget = invocation.execution_budget
+    raise error
 
 
 def build_graph(runtime: GraphRuntime, checkpointer: Any):
@@ -142,9 +152,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             output_model=OUTPUT_MODELS["PlanDraft"],
             workspace=_workspace(state),
             execution_budget=state["execution_budget"],
+            model_profile=runtime.model_profile,
+            pricing_catalog=runtime.pricing_catalog,
         )
         if invocation.result.status != "ok":
-            raise RuntimeError(invocation.result.error)
+            _raise_agent_error(invocation)
         ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "plan", invocation.result.structured_output)
         return _merge_transition(
             runtime,
@@ -167,16 +179,32 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             output_model=OUTPUT_MODELS["DiagnosisSummary"],
             workspace=_workspace(state),
             execution_budget=state["execution_budget"],
+            model_profile=runtime.model_profile,
+            pricing_catalog=runtime.pricing_catalog,
         )
         if invocation.result.status != "ok":
-            raise RuntimeError(invocation.result.error)
+            _raise_agent_error(invocation)
+        updates: dict[str, Any] = {
+            "diagnosis": invocation.result.structured_output,
+            "execution_budget": invocation.execution_budget,
+        }
+        if (
+            state["latest_failure"] is not None
+            and invocation.result.structured_output.get("outcome") == "NO_ACTION_REQUIRED"
+        ):
+            stalled_window = copy.deepcopy(state["progress_window"])
+            stalled_window["no_progress_rounds"] = max(
+                2,
+                int(stalled_window.get("no_progress_rounds", 0)),
+            )
+            updates["progress_window"] = stalled_window
         return _merge_transition(
             runtime,
             state,
-            {"diagnosis": invocation.result.structured_output, "execution_budget": invocation.execution_budget},
+            updates,
             node="diagnosis",
             event_type="diagnosis_completed",
-            allowed={"diagnosis", "execution_budget"},
+            allowed={"diagnosis", "execution_budget", "progress_window"},
             payload={"agent_summary": invocation.result.summary},
         )
 
@@ -191,9 +219,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             output_model=OUTPUT_MODELS["PatchDraft"],
             workspace=_workspace(state),
             execution_budget=state["execution_budget"],
+            model_profile=runtime.model_profile,
+            pricing_catalog=runtime.pricing_catalog,
         )
         if invocation.result.status != "ok":
-            raise RuntimeError(invocation.result.error)
+            _raise_agent_error(invocation)
         workspace = _workspace(state)
         budget = invocation.execution_budget
         diffs: list[str] = []
@@ -251,7 +281,15 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         )
         risk_ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "risk_report", result.output)
         decision = result.output["decision"]
-        updates: dict[str, Any] = {"execution_budget": result.execution_budget}
+        proposal_status = {
+            "DENY": "INVALIDATED",
+            "APPROVAL_REQUIRED": "WAITING_RISK_APPROVAL",
+            "AUTO_ALLOWED": "APPROVED",
+        }[decision]
+        updates: dict[str, Any] = {
+            "execution_budget": result.execution_budget,
+            "patch_proposal": proposal.model_copy(update={"status": proposal_status}).to_state_dict(),
+        }
         if decision == "DENY":
             updates.update({"status": TaskStatus.POLICY_REJECTED.value, "pause_reason": "POLICY_DENY"})
         elif decision == "APPROVAL_REQUIRED":
@@ -280,22 +318,28 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             updates,
             node="risk_assessment",
             event_type="risk_assessed",
-            allowed={"execution_budget", "pending_approval", "status", "pause_reason"},
+            allowed={"execution_budget", "patch_proposal", "pending_approval", "status", "pause_reason"},
             payload={"decision": decision, "risk_report_ref": risk_ref.to_state_dict()},
         )
 
     def approval_gate(state: GraphState) -> GraphState:
         approval = ApprovalRequest.from_state_dict(state["pending_approval"] or {})
+        proposal = PatchProposal.from_state_dict(state["patch_proposal"] or {})
         decision = interrupt(approval.to_state_dict())
         now = runtime.clock.now()
         if now >= datetime.fromisoformat(approval.expires_at):
             return _merge_transition(
                 runtime,
                 state,
-                {"status": TaskStatus.CANCELLED.value, "pause_reason": "APPROVAL_EXPIRED", "pending_approval": None},
+                {
+                    "status": TaskStatus.CANCELLED.value,
+                    "pause_reason": "APPROVAL_EXPIRED",
+                    "pending_approval": None,
+                    "patch_proposal": proposal.model_copy(update={"status": "INVALIDATED"}).to_state_dict(),
+                },
                 node="approval_gate",
                 event_type="approval_expired",
-                allowed={"status", "pause_reason", "pending_approval"},
+                allowed={"status", "pause_reason", "pending_approval", "patch_proposal"},
             )
         required = {
             "approval_id": approval.approval_id,
@@ -308,23 +352,34 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             return _merge_transition(
                 runtime,
                 state,
-                {"status": TaskStatus.CANCELLED.value, "pause_reason": "APPROVAL_REJECTED", "pending_approval": None},
+                {
+                    "status": TaskStatus.CANCELLED.value,
+                    "pause_reason": "APPROVAL_REJECTED",
+                    "pending_approval": None,
+                    "patch_proposal": proposal.model_copy(update={"status": "INVALIDATED"}).to_state_dict(),
+                },
                 node="approval_gate",
                 event_type="approval_rejected",
-                allowed={"status", "pause_reason", "pending_approval"},
+                allowed={"status", "pause_reason", "pending_approval", "patch_proposal"},
             )
         return _merge_transition(
             runtime,
             state,
-            {"status": TaskStatus.RUNNING.value, "pause_reason": None, "pending_approval": None},
+            {
+                "status": TaskStatus.RUNNING.value,
+                "pause_reason": None,
+                "pending_approval": None,
+                "patch_proposal": proposal.model_copy(update={"status": "APPROVED"}).to_state_dict(),
+            },
             node="approval_gate",
             event_type="approval_granted",
-            allowed={"status", "pause_reason", "pending_approval"},
+            allowed={"status", "pause_reason", "pending_approval", "patch_proposal"},
             payload={"decided_by": decision.get("decided_by", "cli")},
         )
 
     def apply_patch(state: GraphState) -> GraphState:
         workspace = _workspace(state)
+        runtime.workspace_manager.validate_lease(workspace, state["run_id"])
         proposal = PatchProposal.from_state_dict(state["patch_proposal"] or {})
         if workspace.current_revision != proposal.base_revision:
             raise ValueError("patch base revision does not match workspace")
@@ -357,6 +412,8 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     def run_verification(state: GraphState) -> GraphState:
         workspace = _workspace(state)
+        runtime.workspace_manager.validate_lease(workspace, state["run_id"])
+        runtime.workspace_manager.validate_revision(workspace)
         result = runtime.tools.execute(
             "test-execution",
             {"workspace_id": workspace.workspace_id, "command": runtime.verification_command, "timeout": 120},
@@ -382,8 +439,17 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         verification = state["verification"] or {}
         passed = verification.get("exit_code") == 0 and verification.get("passed") is True
         if passed:
+            proposal = PatchProposal.from_state_dict(state["patch_proposal"] or {})
             return _merge_transition(
-                runtime, state, {}, node="parse_verification", event_type="verification_passed", allowed=set()
+                runtime,
+                state,
+                {
+                    "latest_failure": None,
+                    "patch_proposal": proposal.model_copy(update={"status": "VERIFIED"}).to_state_dict(),
+                },
+                node="parse_verification",
+                event_type="verification_passed",
+                allowed={"latest_failure", "patch_proposal"},
             )
         symptom = hashlib.sha256(
             json.dumps(
@@ -459,14 +525,16 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         symptom_aba = len(entries) >= 3 and entries[-1].get("symptom_fingerprint") == entries[-3].get("symptom_fingerprint")
         change_aba = len(entries) >= 3 and entries[-1].get("change_fingerprint") == entries[-3].get("change_fingerprint")
         stopped = (
-            state["progress_window"].get("no_progress_rounds", 0) >= 1
+            state["progress_window"].get("no_progress_rounds", 0) >= 2
             or symptom_aba
             or change_aba
             or budget.iterations_used >= budget.max_iterations
         )
         if stopped:
             workspace = _workspace(state)
+            proposal = PatchProposal.from_state_dict(state["patch_proposal"] or {})
             if state["active_recovery_point_ref"] and budget.rollbacks_used < budget.max_rollbacks:
+                runtime.workspace_manager.validate_lease(workspace, state["run_id"])
                 recovery = json.loads(
                     runtime.artifacts.read_text(
                         state["task_id"], state["run_id"], {"sha256": state["active_recovery_point_ref"]}
@@ -482,10 +550,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                     "execution_budget": budget.to_state_dict(),
                     "status": TaskStatus.WAITING_HUMAN_INTERVENTION.value,
                     "pause_reason": "NO_PROGRESS_OR_BUDGET",
+                    "patch_proposal": proposal.model_copy(update={"status": "INVALIDATED"}).to_state_dict(),
                 },
                 node="failure_router",
                 event_type="human_intervention_required",
-                allowed={"workspace_ref", "execution_budget", "status", "pause_reason"},
+                allowed={"workspace_ref", "execution_budget", "status", "pause_reason", "patch_proposal"},
             )
         budget = budget.model_copy(update={"iterations_used": budget.iterations_used + 1})
         return _merge_transition(
@@ -505,9 +574,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             output_model=OUTPUT_MODELS["ReviewSummary"],
             workspace=_workspace(state),
             execution_budget=state["execution_budget"],
+            model_profile=runtime.model_profile,
+            pricing_catalog=runtime.pricing_catalog,
         )
         if invocation.result.status != "ok":
-            raise RuntimeError(invocation.result.error)
+            _raise_agent_error(invocation)
         status = TaskStatus.COMPLETED_NO_CHANGES.value if outcome == "NO_CHANGES" else TaskStatus.COMPLETED.value
         return _merge_transition(
             runtime,
@@ -544,8 +615,19 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     builder.add_edge("planning", "diagnosis")
     builder.add_conditional_edges(
         "diagnosis",
-        lambda s: "review" if (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED" else "patch_generation",
-        {"review": "review", "patch_generation": "patch_generation"},
+        lambda s: (
+            "failed_no_action"
+            if s["latest_failure"] is not None
+            and (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED"
+            else "review"
+            if (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED"
+            else "patch_generation"
+        ),
+        {
+            "failed_no_action": "failure_router",
+            "review": "review",
+            "patch_generation": "patch_generation",
+        },
     )
     builder.add_edge("patch_generation", "risk_assessment")
     builder.add_conditional_edges(

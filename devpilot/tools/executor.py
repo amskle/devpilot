@@ -83,11 +83,30 @@ class ToolRegistry:
         except KeyError as exc:
             raise PolicyDeniedError(f"unknown tool: {name}") from exc
 
-    def schemas(self, names: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
-        return [
-            {"type": "function", "function": {"name": name, "description": name, "parameters": self.get(name).json_schema()}}
-            for name in names
-        ]
+    def schemas(
+        self,
+        names: tuple[str, ...] | list[str],
+        *,
+        expose_runtime_fields: bool = True,
+    ) -> list[dict[str, Any]]:
+        schemas = []
+        for name in names:
+            parameters = self.get(name).json_schema()
+            if not expose_runtime_fields:
+                parameters.get("properties", {}).pop("workspace_id", None)
+                required = parameters.get("required", [])
+                parameters["required"] = [field for field in required if field != "workspace_id"]
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": name,
+                        "parameters": parameters,
+                    },
+                }
+            )
+        return schemas
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -123,7 +142,13 @@ class ToolExecutor:
         idempotency_key: str | None = None,
     ) -> ToolResult:
         if operation_id in self._completed:
-            return self._completed[operation_id]
+            cached = self._completed[operation_id]
+            return ToolResult(
+                cached.operation_id,
+                cached.output,
+                cached.attempts,
+                execution_budget,
+            )
         if name not in allowed_tools:
             raise PolicyDeniedError(f"tool {name} is not authorized")
         spec = self.registry.get(name)
@@ -141,22 +166,37 @@ class ToolExecutor:
         last_error: Exception | None = None
         for attempt in range(retries + 1):
             budget = self.budget_service.reserve_tool(budget, retry=attempt > 0)
+            started = time.monotonic()
             try:
                 output = spec.handler(model, workspace)
+                budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
                 result = ToolResult(operation_id, output, attempt + 1, budget)
                 self._completed[operation_id] = result
                 return result
             except ToolExecutionError as exc:
+                budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
                 last_error = exc
                 if not exc.transient or attempt >= retries:
                     break
                 time.sleep(min(0.02 * (2**attempt), 0.1))
             except (OSError, TimeoutError) as exc:
+                budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
                 last_error = exc
                 if attempt >= retries:
                     break
                 time.sleep(min(0.02 * (2**attempt), 0.1))
-        raise ToolExecutionError("TOOL_RETRY_EXHAUSTED", str(last_error or "tool failed"))
+            except PolicyDeniedError as exc:
+                budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
+                exc.execution_budget = budget
+                raise
+            except Exception as exc:
+                budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
+                error = ToolExecutionError("TOOL_FAILED", str(exc))
+                error.execution_budget = budget
+                raise error from exc
+        error = ToolExecutionError("TOOL_RETRY_EXHAUSTED", str(last_error or "tool failed"))
+        error.execution_budget = budget
+        raise error
 
 
 def _legacy_repo_handler(skill_name: str) -> Callable[[BaseModel, WorkspaceRef], dict[str, Any]]:

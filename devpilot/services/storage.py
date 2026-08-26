@@ -124,12 +124,27 @@ class SQLiteControlStore:
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
-        secret_names = {"api_key", "authorization", "token", "password", "secret", "env"}
+        secret_names = {
+            "apikey",
+            "authorization",
+            "token",
+            "accesstoken",
+            "refreshtoken",
+            "password",
+            "secret",
+            "clientsecret",
+            "env",
+        }
         if isinstance(value, dict):
-            return {
-                str(k): "[REDACTED]" if str(k).lower() in secret_names else SQLiteControlStore._sanitize(v)
-                for k, v in value.items()
-            }
+            sanitized = {}
+            for key, item in value.items():
+                normalized = "".join(character for character in str(key).lower() if character.isalnum())
+                sanitized[str(key)] = (
+                    "[REDACTED]"
+                    if normalized in secret_names
+                    else SQLiteControlStore._sanitize(item)
+                )
+            return sanitized
         if isinstance(value, list):
             return [SQLiteControlStore._sanitize(item) for item in value]
         if isinstance(value, str) and len(value) > 16_000:
@@ -161,7 +176,12 @@ class SQLiteControlStore:
 
     def list_tasks(self) -> list[dict[str, Any]]:
         rows = self._conn.execute("SELECT * FROM task_projection ORDER BY updated_at DESC").fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["state"] = json.loads(item.pop("state_json"))
+            result.append(item)
+        return result
 
     def _next_sequence_tx(self, task_id: str, run_id: str) -> int:
         row = self._conn.execute(
