@@ -211,5 +211,11 @@ def main() -> None:
         sys.exit(1)
 
 
+# The canonical implementation is the LangGraph compatibility facade.  The
+# definitions above remain temporarily for source-level import compatibility
+# with the original competition submission and are not an executable backend.
+from runtime.compat_pipeline import main, run_pipeline  # noqa: E402,F811
+
+
 if __name__ == "__main__":
     main()

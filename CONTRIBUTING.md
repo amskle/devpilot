@@ -7,7 +7,8 @@
 ```powershell
 git clone https://github.com/amskle/devpilot-infra.git
 cd devpilot-infra
-pip install -e ".[dev]"
+python -m pip install -r requirements.lock
+python -m pip install --no-deps -e .
 python -m pytest skills tests -q
 ```
 

@@ -1,13 +1,20 @@
 # 部署说明
 
+> Phase 1 默认部署方式是本地 CLI + SQLite + 独立 Git worktree。AgentTeams 部分仅为 legacy 资产说明。
+
 ## 本地开发模式
 
 ```powershell
 cd A:\agent\devpilot-infra
-python runtime\pipeline.py --repo demo\sample_python --approval confirm --output-dir out\demo
+python -m pip install -r requirements.lock
+python -m pip install --no-deps -e .
+$env:DEVPILOT_MODEL_API_KEY = "..."
+$env:DEVPILOT_MODEL_BASE_URL = "https://compatible-endpoint/v1"
+$env:DEVPILOT_MODEL = "model-name"
+python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失败测试"
 ```
 
-## AgentTeams 模式
+## Legacy AgentTeams 模式
 
 1. 启动 Docker Desktop，并安装 AgentTeams：
 

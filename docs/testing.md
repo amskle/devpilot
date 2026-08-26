@@ -6,12 +6,20 @@
 python -m pytest skills tests -q
 ```
 
-覆盖内容：
-- 8 个核心 Skill 的输入输出与关键规则
-- 本地管线端到端闭环（诊断 -> 修复 -> 验证 -> 复盘）
-- 验证失败时自动回滚，源文件恢复原状
+当前 37 项覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、审批中断/过期、Checkpoint/Restore、Progress 双指纹、异常规范化和旧入口兼容。
 
-## 2. 本地端到端 Demo
+## 2. Phase 1 CLI
+
+```powershell
+python -m devpilot --help
+python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失败测试"
+python -m devpilot task status --task-id TASK_ID
+python -m devpilot admin reconcile --task-id TASK_ID
+```
+
+真实模型 smoke 需要显式设置 `DEVPILOT_MODEL_API_KEY`、`DEVPILOT_MODEL_BASE_URL` 和 `DEVPILOT_MODEL`，CI 只使用 ScriptedFakeModelGateway。
+
+## 3. Legacy 本地 Demo
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_python --approval confirm --output-dir out\demo
@@ -24,7 +32,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 
 `--approval auto` 用于自动化测试；真人演示使用 `confirm` 走审批分支。
 
-## 3. 失败与回滚路径
+## 4. 失败与回滚路径
 
 自动化用例：`tests/test_pipeline.py::test_pipeline_rolls_back_when_verification_fails`
 
@@ -33,7 +41,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 - 源文件恢复为修改前内容
 - 任务状态 `failed`，报告中保留失败证据
 
-## 4. MCP Server 冒烟
+## 5. Legacy MCP Server 冒烟
 
 ```powershell
 python -m mcp run mcp\git_server.py
@@ -42,7 +50,7 @@ python -m mcp run mcp\testing_server.py
 
 生产环境通过 Higress 注册后，在 Element 中让 Worker 调用 Git/Testing 工具验证。
 
-## 5. AgentTeams 集成冒烟
+## 6. Legacy AgentTeams 集成冒烟
 
 1. 打开 Element：`http://127.0.0.1:18088`，登录管理员账号。
 2. 给 Manager 发任务，例如：“对 A:\agent\devpilot-infra\demo\sample_python 做一次缺陷诊断”。
@@ -56,7 +64,7 @@ docker exec hiclaw-controller hiclaw get teams
 
 5. 查看 Worker 日志确认无鉴权或工具调用错误。
 
-## 6. Java 示例（诊断链路）
+## 7. Java 示例（兼容链路）
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_spring --approval auto --output-dir out\spring

@@ -3,13 +3,29 @@
 [![CI](https://github.com/amskle/devpilot-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/amskle/devpilot-infra/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-12%20passed-brightgreen.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-37%20passed-brightgreen.svg)](#测试)
 
-> 面向软件研发全生命周期的多 Agent 协同优化基础设施。以 **AgentTeams** 为协同设计基点，覆盖项目理解、缺陷发现、根因分析、优化规划、安全修改、自动验证、经验沉淀与能力进化。
+> 以 **LangGraph** 为唯一工作流编排器、以 DevPilot Agent Runtime 为受控智能执行层的软件研发 Agent 平台。
 
-DevPilot Infra 将"缺陷发现 → 优化规划 → 安全修改 → 自动验证 → 复盘沉淀"固化为八环节闭环，通过 6 个 Agent 分工协作、8 个 Skill 提供可复用能力、2 个 MCP Server 接入工程工具链，在高风险修改上实现分级审批、自动回滚与全链路审计。
+当前 Phase 0+1 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、CLI 暂停恢复和脚本化 Fake Model 测试。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
-## 系统架构
+## 当前系统架构
+
+```text
+CLI
+  → TaskService
+  → LangGraph（流程、条件路由、Interrupt、Checkpoint、预算）
+  → DevPilot Agent Runtime（Prompt、模型、有限 Tool Loop、Schema 校验）
+  → ToolExecutor（白名单、路径、重试、预算）
+  → 8 个 Skill / Git Worktree / Test Execution
+  → SQLite Control Projection + Event Store / Artifact Store
+```
+
+详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，架构决策见 [docs/adr/](docs/adr/)。
+
+## Legacy AgentTeams 架构资料
+
+下图描述的是原比赛提交资产，不是当前默认运行时。
 
 ```mermaid
 flowchart TB
@@ -73,7 +89,7 @@ flowchart TB
     Team -.-> OBS
 ```
 
-## Agent 分工
+## Legacy Agent 分工
 
 | Agent | 角色 | 职责 | 调用 Skill |
 |-------|------|------|-----------|
@@ -102,18 +118,27 @@ flowchart TB
 ### 前置条件
 
 - Python 3.10+
-- AgentTeams（Docker 部署，仅 AgentTeams 模式需要）
+- Git 2.30+
+- 真实模型模式需要 OpenAI-compatible Chat Completions 端点
 
 ### 本地模式（无需 Docker）
 
 ```powershell
-pip install -e ".[dev]"
-python runtime/pipeline.py --repo demo/sample_python --approval auto --output-dir out/demo
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.lock
+.\.venv\Scripts\python -m pip install --no-deps -e .
+
+$env:DEVPILOT_MODEL_API_KEY = "..."
+$env:DEVPILOT_MODEL_BASE_URL = "https://your-compatible-endpoint/v1"
+$env:DEVPILOT_MODEL = "your-model"
+python -m devpilot task create --repo C:\path\to\clean-git-repo --request "修复失败测试"
 ```
 
-本地模式直接调用 Skill 完成"诊断 → 规划 → 修改 → 验证 → 复盘"闭环，不依赖 Docker。运行报告输出到 `out/demo/report.md`，示例证据见 `docs/examples/`。
+源仓库必须是干净 Git 根目录。DevPilot 在用户数据目录中创建隔离 clone/worktree，绝不直接修改源工作树。可用 `python -m devpilot --help` 查看审批、拒绝、取消、回滚、恢复和对账命令。
 
-### AgentTeams 模式
+旧 `runtime/pipeline.py` 仍是兼容入口，但只转发到上述 LangGraph 后端。
+
+### Legacy AgentTeams 资料
 
 ```powershell
 # 1. 确认平台状态
@@ -138,11 +163,12 @@ docker exec hiclaw-controller hiclaw apply -f mcp/testing_server.py
 ## 项目结构
 
 ```text
-agentteams/       AgentTeams 声明式资源（Manager / 5 Worker / Team / Human）
+devpilot/         LangGraph、Agent Runtime、ToolExecutor、服务、CLI 与领域契约
+agentteams/       Legacy AgentTeams 声明式资源（不进入新执行链）
 skills/           8 个核心 Skill（metadata + executor + tests）
 mcp/              MCP Server（Git / Testing）
 shared_state/     共享状态与事件模型（schema + store）
-runtime/          本地编排管线（状态机、审批、报告）
+runtime/          旧 API/CLI 兼容投影与报告
 demo/             Python / Spring Boot 示例场景
 docs/             设计、安全、部署、合规、测试文档 + 运行证据
 scripts/          构建、部署辅助脚本
@@ -155,7 +181,7 @@ tests/            端到端冒烟测试
 python -m pytest skills tests -q
 ```
 
-测试覆盖 8 个 Skill 执行器、本地端到端闭环、失败自动回滚，当前 12 项全部通过。详细说明见 [docs/testing.md](docs/testing.md)。
+测试覆盖 8 个 Skill、State 序列化、Fake Gateway、Tool 权限/重试、SQLite 对账、工作区隔离、审批过期、Checkpoint 恢复和端到端闭环，当前 37 项全部通过。详细说明见 [docs/testing.md](docs/testing.md)。
 
 ## 运行证据
 
@@ -181,7 +207,7 @@ python -m pytest skills tests -q
 
 ## 合规与披露
 
-本项目以 AgentTeams 为多 Agent 协同设计基点；Skill 为必选项，MCP 为工具连接层；高风险代码修改采用分级审批、自动回滚与全链路审计。第三方依赖、商业 API、闭源模型、数据来源与授权边界见 [docs/compliance.md](docs/compliance.md)。
+本项目当前以 LangGraph 为唯一状态机；AgentTeams/MCP 是保留的历史迁移资产。高风险代码修改采用绑定 Patch 的审批、隔离工作区、补偿回滚与结构化审计。第三方依赖、商业 API、闭源模型、数据来源与授权边界见 [docs/compliance.md](docs/compliance.md)。
 
 ## 贡献
 

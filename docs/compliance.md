@@ -17,7 +17,7 @@
 - 允许使用商业 API 与闭源模型，但必须披露调用环节、费用假设、权限范围、可替代性与锁定风险。
 - 默认使用 OpenAI 兼容网关（如 DeepSeek / 百炼 / Qwen），不将模型密钥写入 Worker。
 
-当前运行配置：阿里云百炼/DashScope 兼容模式，模型 `qwen3.7-flash`，经 AgentTeams 内置 Higress AI 网关统一调用；API Key 仅保存在本机 env 与网关配置，不进入代码仓库。
+当前运行时通过可配置 OpenAI-compatible Chat Completions 端点接入模型，可使用 DashScope/Higress 等兼容网关；API Key 仅从本机环境变量读取，不进入代码仓库、GraphState、事件或 Artifact。AgentTeams 配置仅为 legacy 迁移资产。
 
 ## 数据与授权
 

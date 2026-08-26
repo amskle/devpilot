@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+*.egg-info/
 dist/
 build/
 *.zip
@@ -9,3 +10,6 @@ build/
 out/
 .idea/
 *.log
+*.sqlite
+change.md
+change2.md
