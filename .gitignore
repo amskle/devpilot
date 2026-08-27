@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+*.tsbuildinfo
 *.zip
 .env
 out/

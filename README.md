@@ -51,6 +51,7 @@
 
 - Dashboard、Task Detail、Timeline、Diff、测试报告。
 - 风险审批、人工介入、恢复操作和 ChangeRequest。
+- 已实现 Vue3/TypeScript 控制台、安全控制请求和可靠事件游标恢复；端到端运行等待 Phase 4 API 合入。
 
 ### Phase 6：分层记忆
 
@@ -68,7 +69,7 @@
 
 ---
 
-当前 Phase 0+1+2+3 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏、WebSocket 订阅基础和完整 Trace。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
+当前 Phase 0+1+2+3 和 Phase 5 前端已实现。核心运行时包含 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏、WebSocket 订阅基础和完整 Trace。Vue3 控制台已覆盖 Dashboard、Task Detail、可靠 Timeline、Diff/验证报告与人工控制；完整联调依赖 Phase 4 FastAPI。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
 ## 当前系统架构
 
@@ -83,7 +84,7 @@ CLI
   → Redis Streams → WebSocket Subscription Hub
 ```
 
-详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，Phase 3 说明见 [docs/phase3-reliable-events.md](docs/phase3-reliable-events.md)，架构决策见 [docs/adr/](docs/adr/)。
+详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，Phase 3 说明见 [docs/phase3-reliable-events.md](docs/phase3-reliable-events.md)，Phase 5 说明见 [docs/phase5-vue3-frontend.md](docs/phase5-vue3-frontend.md)，架构决策见 [docs/adr/](docs/adr/)。
 
 ## Legacy AgentTeams 架构资料
 
@@ -204,6 +205,16 @@ python -m devpilot task replan --task-id TASK_ID --expected-revision REVISION --
 
 旧 `runtime/pipeline.py` 仍是兼容入口，但只转发到上述 LangGraph 后端。
 
+### Phase 5 前端
+
+```powershell
+cd frontend\vue3
+npm ci
+npm run dev
+```
+
+开发模式默认把 `/api` 转发到 `http://127.0.0.1:8000`。当前分支尚未包含 Phase 4 FastAPI，因此需要相应服务才能进行端到端操作；类型检查、组件测试和生产构建可以独立执行。
+
 ### Legacy AgentTeams 资料
 
 ```powershell
@@ -230,6 +241,7 @@ docker exec hiclaw-controller hiclaw apply -f mcp/testing_server.py
 
 ```text
 devpilot/         LangGraph、Agent Runtime、ToolExecutor、服务、CLI 与领域契约
+frontend/vue3/    Vue3 Dashboard、任务详情、可靠事件和人工控制界面
 agentteams/       Legacy AgentTeams 声明式资源（不进入新执行链）
 skills/           8 个核心 Skill（metadata + executor + tests）
 mcp/              MCP Server（Git / Testing）
@@ -245,9 +257,14 @@ tests/            端到端冒烟测试
 
 ```powershell
 python -m pytest skills tests -q
+cd frontend\vue3
+npm ci
+npm run typecheck
+npm test
+npm run build
 ```
 
-测试覆盖 8 个 Skill、State 序列化、Fake Gateway、Tool 权限/重试、SQLite 对账、工作区隔离、审批过期、Checkpoint 恢复、预算核算和端到端闭环。测试数量以 CI 实际结果为准，详细说明见 [docs/testing.md](docs/testing.md)。
+测试覆盖 8 个 Skill、State 序列化、Fake Gateway、Tool 权限/重试、SQLite 对账、工作区隔离、审批过期、Checkpoint 恢复、预算核算、端到端闭环，以及前端控制绑定、事件恢复和安全确认。测试数量以 CI 实际结果为准，详细说明见 [docs/testing.md](docs/testing.md)。
 
 ## 运行证据
 

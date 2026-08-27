@@ -42,7 +42,19 @@ python -m pytest tests/test_phase2_planning.py -q
 python -m pytest tests/test_phase3_events.py -q
 ```
 
-## 5. Legacy 本地 Demo
+## 5. Phase 5 Vue3 前端
+
+```powershell
+cd frontend\vue3
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+专项测试覆盖审批对象与 Revision 绑定、网络失败后的幂等 Key 复用、HTTP 409 冲突、Event Store 游标补拉、`event_id` 去重、独立事件/Checkpoint 事件语义，以及 ChangeRequest 废弃待审批 Patch 的二次确认。完整浏览器联调需要 Phase 4 API。
+
+## 6. Legacy 本地 Demo
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_python --approval confirm --output-dir out\demo
@@ -55,7 +67,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 
 `--approval auto` 用于自动化测试；真人演示使用 `confirm` 走审批分支。
 
-## 6. 失败与回滚路径
+## 7. 失败与回滚路径
 
 自动化用例：`tests/test_pipeline.py::test_pipeline_rolls_back_when_verification_fails`
 
@@ -64,7 +76,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 - 源文件恢复为修改前内容
 - 任务状态 `failed`，报告中保留失败证据
 
-## 7. Legacy MCP Server 冒烟
+## 8. Legacy MCP Server 冒烟
 
 ```powershell
 python -m mcp run mcp\git_server.py
@@ -73,7 +85,7 @@ python -m mcp run mcp\testing_server.py
 
 生产环境通过 Higress 注册后，在 Element 中让 Worker 调用 Git/Testing 工具验证。
 
-## 8. Legacy AgentTeams 集成冒烟
+## 9. Legacy AgentTeams 集成冒烟
 
 1. 打开 Element：`http://127.0.0.1:18088`，登录管理员账号。
 2. 给 Manager 发任务，例如：“对 A:\agent\devpilot-infra\demo\sample_python 做一次缺陷诊断”。
@@ -87,7 +99,7 @@ docker exec hiclaw-controller hiclaw get teams
 
 5. 查看 Worker 日志确认无鉴权或工具调用错误。
 
-## 9. Java 示例（兼容链路）
+## 10. Java 示例（兼容链路）
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_spring --approval auto --output-dir out\spring
