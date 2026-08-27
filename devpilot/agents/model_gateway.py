@@ -83,6 +83,7 @@ class ScriptedFakeModelGateway:
             {
                 "agent_id": agent_id,
                 "message_count": len(messages),
+                "messages": copy.deepcopy(messages),
                 "tools": [item["function"]["name"] for item in tools],
                 "output_model": output_model.__name__,
             }

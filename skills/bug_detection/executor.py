@@ -3,6 +3,8 @@ import json
 import re
 from pathlib import Path
 
+from skills.path_filter import should_scan
+
 
 JAVA_QUERY_HINTS = ("findBy", "select", "findAll", "listBy", "query", "repository.")
 LOOP_KEYWORDS = ("for ", "while ", "stream()", "forEach")
@@ -63,7 +65,7 @@ def run(inputs: dict) -> dict:
 
     issues = []
     for path in sorted(repo.rglob("*")):
-        if not path.is_file() or any(part.startswith(".") for part in path.parts):
+        if not should_scan(repo, path):
             continue
         suffix = path.suffix.lower()
         if language in {"auto", "python"} and suffix == ".py":

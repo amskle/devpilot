@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+from skills.path_filter import should_scan
+
 
 SECRET_RE = re.compile(
     r"(?i)(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{6,}['\"]"
@@ -19,7 +21,7 @@ def run(inputs: dict) -> dict:
 
     issues = []
     for path in sorted(repo.rglob("*")):
-        if not path.is_file() or any(part.startswith(".") for part in path.parts):
+        if not should_scan(repo, path):
             continue
         if path.suffix.lower() not in {".py", ".java", ".js", ".ts", ".go", ".properties", ".yml", ".yaml", ".json", ".env"}:
             continue

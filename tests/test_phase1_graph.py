@@ -303,6 +303,141 @@ def test_first_verification_failure_retries_and_success_clears_latest_failure(tm
         service.close()
 
 
+def test_java_baseline_failure_guides_exact_assertion_fix(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    java_test = repo / "src" / "test" / "java" / "com" / "example" / "TestServiceTest.java"
+    java_test.parent.mkdir(parents=True)
+    java_test.write_text(
+        "package com.example;\n"
+        "class CalculatorServiceTest {\n"
+        "  private TestService calculatorService;\n"
+        "  void testDivide() {\n"
+        "    assertEquals(0, calculatorService.divide(1, 2));\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    java_service = repo / "src" / "main" / "java" / "com" / "example" / "TestService.java"
+    java_service.parent.mkdir(parents=True)
+    java_service.write_text(
+        "package com.example;\nclass TestService {\n"
+        "  double divide(double dividend, double divisor) { return dividend / divisor; }\n}\n",
+        encoding="utf-8",
+    )
+    (repo / "pom.xml").write_text("<project><modelVersion>4.0.0</modelVersion></project>\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "java division fixture"], check=True, capture_output=True)
+
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {"summary": "fix failing assertion", "tasks": [], "acceptance_criteria": ["tests pass"], "risks": []}
+                )
+            ],
+            "diagnosis": [
+                ModelResponse.final(
+                    {
+                        "outcome": "ISSUE_FOUND",
+                        "summary": "Expected 0 is incorrect because divide(1, 2) returns 0.5",
+                        "issues": [
+                            {
+                                "target_file": "src/test/java/com/example/TestServiceTest.java",
+                                "old": "assertEquals(0, calculatorService.divide(1, 2));",
+                                "new": "assertEquals(0.5, calculatorService.divide(1, 2));",
+                            }
+                        ],
+                    }
+                )
+            ],
+            "patch_generation": [
+                ModelResponse.final(
+                    {
+                        "summary": "correct expected quotient",
+                        "operations": [
+                            {
+                                "target_file": "src/test/java/com/example/TestServiceTest.java",
+                                "issues": ["incorrect-assertion"],
+                                "replacements": [
+                                    {
+                                        "old": "assertEquals(0, calculatorService.divide(1, 2));",
+                                        "new": "assertEquals(0.5, calculatorService.divide(1, 2));",
+                                        "occurrence": 1,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                )
+            ],
+            "review": [
+                ModelResponse.final({"summary": "verified", "outcome": "COMPLETED", "lessons": []})
+            ],
+        }
+    )
+    check_command = (
+        'python -c "from pathlib import Path; import sys; '
+        "text=Path('src/test/java/com/example/TestServiceTest.java').read_text(); "
+        "fixed='assertEquals(0.5,' in text; "
+        "print('TestServiceTest.java:5 expected: <0.0> but was: <0.5>', file=sys.stderr) if not fixed else None; "
+        "raise SystemExit(0 if fixed else 1)\""
+    )
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=gateway,
+        verification_command=check_command,
+    )
+    try:
+        final = service.create_task(repo, "修复失败测试")
+        assert final["status"] == TaskStatus.COMPLETED.value, final
+        assert final["verification"]["phase"] == "post_patch"
+        assert final["verification"]["passed"] is True
+        diagnosis_call = next(call for call in gateway.calls if call["agent_id"] == "diagnosis")
+        context = json.loads(diagnosis_call["messages"][1]["content"])
+        assert context["baseline_verification"]["phase"] == "baseline"
+        assert "expected: <0.0> but was: <0.5>" in context["baseline_verification"]["stderr"]
+        workspace_test = Path(final["workspace_ref"]["worktree_ref"]) / java_test.relative_to(repo)
+        assert "assertEquals(0.5," in workspace_test.read_text(encoding="utf-8")
+        assert "assertEquals(0," in java_test.read_text(encoding="utf-8")
+        assert any(
+            event["event_type"] == "baseline_verification_executed"
+            for event in service.control.events(final["task_id"])
+        )
+    finally:
+        service.close()
+
+
+def test_failed_baseline_cannot_be_completed_as_no_changes(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    (repo / "pom.xml").write_text("<project><modelVersion>4.0.0</modelVersion></project>\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "maven fixture"], check=True, capture_output=True)
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final({"summary": "inspect", "tasks": [], "acceptance_criteria": ["tests pass"], "risks": []})
+            ],
+            "diagnosis": [
+                ModelResponse.final({"outcome": "NO_ACTION_REQUIRED", "summary": "no issue", "issues": []})
+            ],
+        },
+        strict=False,
+    )
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=gateway,
+        verification_command='python -c "raise SystemExit(1)"',
+    )
+    try:
+        waiting = service.create_task(repo, "修复失败测试")
+        assert waiting["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+        assert waiting["pause_reason"] == "BASELINE_FAILURE_UNDIAGNOSED"
+        assert waiting["latest_failure"]["error_code"] == "BASELINE_FAILURE_UNDIAGNOSED"
+        assert waiting["review"] is None
+    finally:
+        service.close()
+
+
 def test_no_action_after_failed_patch_rolls_back_and_requires_human(tmp_path):
     repo = make_repo(tmp_path / "repo")
     (repo / "tests" / "test_basic.py").write_text(

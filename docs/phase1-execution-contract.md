@@ -26,6 +26,14 @@ Phase 1 没有后台调度器。`task status`、`task approve`、`task reject` �
 
 首次验证失败建立进展基线并允许在迭代预算内自动重诊断。连续两轮无进展、重复修改、A-B-A 震荡或全局预算耗尽才停止自动执行并进入人工介入。验证通过时必须清空上一轮 `latest_failure`，避免成功结果被错误路由回失败分支。Restore 创建新 run 时清空诊断、复盘和进展窗口，避免继承旧 run 的停滞信号。
 
+## 诊断前基线验证
+
+识别为 Maven、Python pip/poetry 或 npm 的项目会在 Planning/Diagnosis 前运行一次确定性基线测试。退出码、stdout、stderr 和报告制品引用会传给 Planning、Diagnosis 与 Patch Generation，模型不能用静态猜测覆盖确定性测试证据。Patch 应用后再次运行验证，并用 `phase=post_patch` 区分基线报告。
+
+如果基线测试失败而 Diagnosis 返回 `NO_ACTION_REQUIRED`，任务必须进入 `WAITING_HUMAN_INTERVENTION`，不能错误完成为 `COMPLETED_NO_CHANGES`。Maven 优先使用 PATH 中的 `mvn`，不可用时回退到仓库内的 `mvnw.cmd`/`mvnw`。
+
+Skill 扫描器只过滤仓库内部的隐藏路径和构建目录；不得因为数据目录或工作区的父目录名为 `.devpilot` 而跳过整个仓库。Java code-analysis 输出字段声明中的类型/变量映射及有总量上限的带行号源码证据，避免从变量名臆测不存在的类。
+
 ## Legacy 状态投影
 
 | 新状态 | 旧 `TaskStatus` |
@@ -50,4 +58,4 @@ Phase 1 没有后台调度器。`task status`、`task approve`、`task reject` �
 - 启用 `max_cost` 时，任务将所选模型和价格表固化为内容寻址快照。每次模型调用前按 `ModelProfile` 最大 Prompt/Completion 用量预留费用，响应后按实际 Token 核算并回补；失败调用保留已预留预算。模型和工具的实际执行时间按整秒向上累计，达到 `max_active_seconds` 后不再发起下一次调用。
 - Git worktree 固定使用 `DevPilot <devpilot@local>` 身份提交，不依赖机器全局 Git 配置。
 - Patch 状态按 `PROPOSED → WAITING_RISK_APPROVAL/APPROVED → APPLIED → VERIFIED/INVALIDATED` 推进。每次应用新 Patch 前拒绝意外的 tracked 改动，并清理上一轮验证留下的未跟踪构建产物，防止缓存进入 Patch 提交或遮蔽新源码。
-- Phase 1 的 `ToolExecutor` 仅在当前进程内按 `operation_id` 去重；进程重启后的持久工具幂等留待可靠任务执行存储补齐。控制命令幂等键已持久化到 SQLite，不受该限制。
+- Phase 1 的 `ToolExecutor` 仅在当前进程内按 `operation_id` 去重；进程重启后的持久工具幂等留待可靠任务执行存储补齐。控制命令幂等键已持久化到 SQLite，不受该限制。非瞬时工具错误保留原始错误码（例如 `REPLACEMENT_TARGET_NOT_FOUND`）；只有瞬时错误实际耗尽重试后才归一为 `TOOL_RETRY_EXHAUSTED`。

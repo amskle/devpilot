@@ -19,7 +19,10 @@ AGENT_SPECS = {
         role="Diagnosis",
         instructions=(
             "Diagnose the requested issue using only authorized analysis tools. Return evidence, not hidden reasoning. "
-            "Use PLAN_INVALID when repository evidence disproves a material assumption in the active Plan; do not edit the Plan."
+            "Treat deterministic baseline test output as primary failure evidence. In Java, resolve identifiers from declared "
+            "field types rather than guessing types from variable or test-class names. For actionable issues include the exact "
+            "target file and source text needed for a minimal replacement. Use PLAN_INVALID when repository evidence disproves "
+            "a material assumption in the active Plan; do not edit the Plan."
         ),
         allowed_tools=("code-analysis", "bug-detection", "security-scan"),
         output_schema="DiagnosisSummary",
@@ -28,7 +31,10 @@ AGENT_SPECS = {
     "patch_generation": AgentSpec(
         agent_id="patch_generation",
         role="Patch Generation",
-        instructions="Propose minimal file replacements. Never apply changes and never target paths outside the workspace.",
+        instructions=(
+            "Propose minimal file replacements grounded in exact source evidence from Diagnosis. Never invent declarations "
+            "from identifier names, never apply changes, and never target paths outside the workspace."
+        ),
         allowed_tools=("patch-generate",),
         output_schema="PatchDraft",
         model_profile="default",

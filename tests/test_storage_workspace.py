@@ -1,6 +1,7 @@
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -107,3 +108,17 @@ def test_workspace_lease_owner_and_expiry_are_enforced(tmp_path):
     clock.advance(seconds=2)
     with pytest.raises(StateConflictError, match="lease expired"):
         manager.validate_lease(workspace, "run-a")
+
+
+def test_workspace_git_uses_utf8_for_patch_input(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("devpilot.workspace.subprocess.run", fake_run)
+    WorkspaceManager._git(tmp_path, "apply", "--check", "-", input_text="// 正常除法\n")
+
+    assert captured["encoding"] == "utf-8"
+    assert captured["input"] == "// 正常除法\n"

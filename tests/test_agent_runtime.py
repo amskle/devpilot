@@ -167,6 +167,30 @@ def test_tool_executor_is_only_retry_owner(tmp_path):
     assert duplicate.execution_budget["tool_retries_used"] == 2
 
 
+def test_non_transient_tool_error_keeps_original_code(tmp_path):
+    attempts = []
+
+    def handler(model, workspace):
+        attempts.append(1)
+        raise ToolExecutionError("REPLACEMENT_TARGET_NOT_FOUND", "missing exact source text")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("exact-replacement", ToolInput, handler, retry_policy="BACKOFF", max_retries=2))
+    executor = ToolExecutor(registry)
+    with pytest.raises(ToolExecutionError) as captured:
+        executor.execute(
+            "exact-replacement",
+            {"workspace_id": "ws-test"},
+            workspace=_workspace(tmp_path),
+            allowed_tools=("exact-replacement",),
+            agent_id=None,
+            operation_id="non-transient",
+            execution_budget=ExecutionBudget().to_state_dict(),
+        )
+    assert captured.value.code == "REPLACEMENT_TARGET_NOT_FOUND"
+    assert attempts == [1]
+
+
 def test_agent_runner_reserves_and_settles_model_cost(tmp_path):
     gateway = ScriptedFakeModelGateway(
         {

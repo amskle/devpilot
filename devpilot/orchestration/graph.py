@@ -143,6 +143,46 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             allowed={"baseline_context_ref", "execution_budget"},
         )
 
+    def baseline_verification(state: GraphState) -> GraphState:
+        context = _read_json(runtime, state, state["baseline_context_ref"]) or {}
+        if context.get("build_tool") not in {"maven", "npm", "pip", "poetry"}:
+            return _merge_transition(
+                runtime,
+                state,
+                {},
+                node="baseline_verification",
+                event_type="baseline_verification_skipped",
+                allowed=set(),
+                payload={"build_tool": context.get("build_tool", "unknown")},
+            )
+        workspace = _workspace(state)
+        result = runtime.tools.execute(
+            "test-execution",
+            {"workspace_id": workspace.workspace_id, "command": runtime.verification_command, "timeout": 120},
+            workspace=workspace,
+            allowed_tools=("test-execution",),
+            agent_id=None,
+            operation_id=f"baseline-verification:{state['run_id']}",
+            execution_budget=state["execution_budget"],
+        )
+        report_ref = runtime.artifacts.put_json(
+            state["task_id"], state["run_id"], "baseline_verification_report", result.output
+        )
+        verification = {
+            **result.output,
+            "phase": "baseline",
+            "report_ref": report_ref.to_state_dict(),
+        }
+        return _merge_transition(
+            runtime,
+            state,
+            {"verification": verification, "execution_budget": result.execution_budget},
+            node="baseline_verification",
+            event_type="baseline_verification_executed",
+            allowed={"verification", "execution_budget"},
+            payload={"exit_code": result.output.get("exit_code"), "passed": result.output.get("passed")},
+        )
+
     def planning(state: GraphState) -> GraphState:
         if state["active_plan_ref"] is not None and state["pending_replan_request"] is None:
             return _merge_transition(runtime, state, {}, node="planning", event_type="plan_reused", allowed=set())
@@ -161,6 +201,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node_context={
                 "request": runtime.request,
                 "baseline": _read_json(runtime, state, state["baseline_context_ref"]),
+                "baseline_verification": state["verification"],
                 "mode": "replan" if replan_request else "initial",
                 "current_plan": previous_plan.to_state_dict() if previous_plan else None,
                 "replan_request": replan_request.to_state_dict() if replan_request else None,
@@ -245,7 +286,16 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     def diagnosis(state: GraphState) -> GraphState:
         invocation = runtime.agents.invoke(
             AGENT_SPECS["diagnosis"],
-            node_context={"request": runtime.request, "plan": _read_json(runtime, state, state["active_plan_ref"])},
+            node_context={
+                "request": runtime.request,
+                "plan": _read_json(runtime, state, state["active_plan_ref"]),
+                "baseline": _read_json(runtime, state, state["baseline_context_ref"]),
+                "baseline_verification": (
+                    state["verification"]
+                    if (state["verification"] or {}).get("phase") == "baseline"
+                    else None
+                ),
+            },
             output_model=OUTPUT_MODELS["DiagnosisSummary"],
             workspace=_workspace(state),
             execution_budget=state["execution_budget"],
@@ -258,6 +308,39 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             "diagnosis": invocation.result.structured_output,
             "execution_budget": invocation.execution_budget,
         }
+        baseline_failed = (
+            (state["verification"] or {}).get("phase") == "baseline"
+            and (state["verification"] or {}).get("passed") is False
+        )
+        if (
+            baseline_failed
+            and invocation.result.structured_output.get("outcome") == "NO_ACTION_REQUIRED"
+        ):
+            report_ref = (state["verification"] or {}).get("report_ref", {})
+            failure = FailureRecord(
+                failure_id=f"failure_{uuid.uuid4().hex[:16]}",
+                iteration=ExecutionBudget.from_state_dict(invocation.execution_budget).iterations_used,
+                category="VERIFICATION",
+                error_code="BASELINE_FAILURE_UNDIAGNOSED",
+                summary="baseline tests failed but Diagnosis did not identify an actionable issue",
+                symptom_fingerprint=hashlib.sha256(
+                    json.dumps(state["verification"], sort_keys=True).encode()
+                ).hexdigest(),
+                change_fingerprint=None,
+                retry_policy="NEVER",
+                recovery_action="HUMAN",
+                agent_actionable=False,
+                related_files=[],
+                artifact_refs=[report_ref.get("artifact_id", "")],
+                occurred_at=runtime.clock.now().isoformat(),
+            )
+            updates.update(
+                {
+                    "latest_failure": failure.to_state_dict(),
+                    "status": TaskStatus.WAITING_HUMAN_INTERVENTION.value,
+                    "pause_reason": "BASELINE_FAILURE_UNDIAGNOSED",
+                }
+            )
         if invocation.result.structured_output.get("outcome") == "PLAN_INVALID":
             summary = str(invocation.result.structured_output.get("summary", "Plan assumptions are invalid"))
             plan_ref = state["active_plan_ref"] or {}
@@ -295,7 +378,14 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             updates,
             node="diagnosis",
             event_type="diagnosis_completed",
-            allowed={"diagnosis", "execution_budget", "progress_window", "latest_failure"},
+            allowed={
+                "diagnosis",
+                "execution_budget",
+                "progress_window",
+                "latest_failure",
+                "status",
+                "pause_reason",
+            },
             payload={"agent_summary": invocation.result.summary},
         )
 
@@ -306,6 +396,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 "request": runtime.request,
                 "plan": _read_json(runtime, state, state["active_plan_ref"]),
                 "diagnosis": state["diagnosis"],
+                "baseline_verification": (
+                    state["verification"]
+                    if (state["verification"] or {}).get("phase") == "baseline"
+                    else None
+                ),
             },
             output_model=OUTPUT_MODELS["PatchDraft"],
             workspace=_workspace(state),
@@ -515,7 +610,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             execution_budget=state["execution_budget"],
         )
         report_ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "verification_report", result.output)
-        value = {**result.output, "report_ref": report_ref.to_state_dict()}
+        value = {**result.output, "phase": "post_patch", "report_ref": report_ref.to_state_dict()}
         return _merge_transition(
             runtime,
             state,
@@ -711,6 +806,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     builder.add_node("workspace_setup", workspace_setup)
     builder.add_node("baseline_context", baseline_context)
+    builder.add_node("baseline_verification", baseline_verification)
     builder.add_node("prepare_replan", prepare_replan)
     builder.add_node("planning", planning)
     builder.add_node("diagnosis", diagnosis)
@@ -726,12 +822,15 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     builder.add_edge(START, "workspace_setup")
     builder.add_edge("workspace_setup", "baseline_context")
-    builder.add_edge("baseline_context", "planning")
+    builder.add_edge("baseline_context", "baseline_verification")
+    builder.add_edge("baseline_verification", "planning")
     builder.add_edge("planning", "diagnosis")
     builder.add_conditional_edges(
         "diagnosis",
         lambda s: (
-            "plan_invalid"
+            "end"
+            if s["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+            else "plan_invalid"
             if (s["diagnosis"] or {}).get("outcome") == "PLAN_INVALID"
             else "failed_no_action"
             if s["latest_failure"] is not None
@@ -741,6 +840,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             else "patch_generation"
         ),
         {
+            "end": END,
             "plan_invalid": "failure_router",
             "failed_no_action": "failure_router",
             "review": "review",

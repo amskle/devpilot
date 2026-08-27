@@ -176,7 +176,10 @@ class ToolExecutor:
             except ToolExecutionError as exc:
                 budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
                 last_error = exc
-                if not exc.transient or attempt >= retries:
+                if not exc.transient:
+                    exc.execution_budget = budget
+                    raise
+                if attempt >= retries:
                     break
                 time.sleep(min(0.02 * (2**attempt), 0.1))
             except (OSError, TimeoutError) as exc:

@@ -21,7 +21,13 @@ class WorkspaceManager:
     @staticmethod
     def _git(repo: Path, *args: str, input_text: str | None = None, check: bool = True) -> str:
         proc = subprocess.run(
-            ["git", "-C", str(repo), *args], input=input_text, capture_output=True, text=True, check=False
+            ["git", "-C", str(repo), *args],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
         if check and proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"git {' '.join(args)} failed")
@@ -112,7 +118,12 @@ class WorkspaceManager:
         )
         proc = subprocess.run(
             ["git", "-C", str(root), "commit", "-m", "devpilot: apply approved patch"],
-            capture_output=True, text=True, env=env, check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            check=False,
         )
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "failed to commit patch")
