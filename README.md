@@ -68,7 +68,7 @@
 
 ---
 
-当前 Phase 0+1+2 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚，以及结构化版本化 Plan、ReplanRequest、Planning Agent 复用和 Plan 原子切换。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
+当前 Phase 0+1+2+3 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏、WebSocket 订阅基础和完整 Trace。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
 ## 当前系统架构
 
@@ -79,10 +79,11 @@ CLI
   → DevPilot Agent Runtime（Prompt、模型、有限 Tool Loop、Schema 校验）
   → ToolExecutor（白名单、路径、重试、预算）
   → 8 个 Skill / Git Worktree / Test Execution
-  → SQLite Control Projection + Event Store / Artifact Store
+  → SQLite Control Projection + Event Store / Transactional Outbox / Artifact Store
+  → Redis Streams → WebSocket Subscription Hub
 ```
 
-详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，架构决策见 [docs/adr/](docs/adr/)。
+详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，Phase 3 说明见 [docs/phase3-reliable-events.md](docs/phase3-reliable-events.md)，架构决策见 [docs/adr/](docs/adr/)。
 
 ## Legacy AgentTeams 架构资料
 

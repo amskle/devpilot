@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from devpilot.clock import Clock, SystemClock
 from devpilot.domain.models import ArtifactRef, PlanDocument, PlanLifecycle, ReplanRequest
 from devpilot.domain.state import GraphState, validate_state
 from devpilot.errors import StateConflictError
+from devpilot.events.models import ExecutionEvent, OutboxEntry, TraceView
+from devpilot.events.redaction import sanitize_event_value
 
 
 def default_data_dir() -> Path:
@@ -99,13 +102,39 @@ class SQLiteControlStore:
               schema_version INTEGER NOT NULL,
               task_id TEXT NOT NULL,
               run_id TEXT NOT NULL,
+              node_name TEXT,
+              attempt INTEGER,
               sequence_number INTEGER NOT NULL,
               event_type TEXT NOT NULL,
+              correlation_id TEXT,
+              causation_id TEXT,
               payload_json TEXT NOT NULL,
+              artifact_refs_json TEXT NOT NULL DEFAULT '[]',
               checkpoint_confirmed INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
               UNIQUE(task_id, run_id, sequence_number)
             );
+            CREATE INDEX IF NOT EXISTS execution_events_task_cursor
+              ON execution_events(task_id, run_id, sequence_number);
+            CREATE TABLE IF NOT EXISTS event_outbox (
+              outbox_id TEXT PRIMARY KEY,
+              event_id TEXT NOT NULL UNIQUE,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              sequence_number INTEGER NOT NULL,
+              status TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              available_at TEXT NOT NULL,
+              claimed_by TEXT,
+              claimed_at TEXT,
+              published_at TEXT,
+              stream_id TEXT,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(event_id) REFERENCES execution_events(event_id)
+            );
+            CREATE INDEX IF NOT EXISTS event_outbox_delivery
+              ON event_outbox(status, available_at, created_at);
             CREATE TABLE IF NOT EXISTS idempotency_keys (
               task_id TEXT NOT NULL,
               operation TEXT NOT NULL,
@@ -153,36 +182,26 @@ class SQLiteControlStore:
         if "checkpoint_run_id" not in columns:
             self._conn.execute("ALTER TABLE task_projection ADD COLUMN checkpoint_run_id TEXT")
             self._conn.execute("UPDATE task_projection SET checkpoint_run_id=run_id WHERE checkpoint_run_id IS NULL")
+        event_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(execution_events)").fetchall()
+        }
+        event_migrations = {
+            "node_name": "TEXT",
+            "attempt": "INTEGER",
+            "correlation_id": "TEXT",
+            "causation_id": "TEXT",
+            "artifact_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for column, declaration in event_migrations.items():
+            if column not in event_columns:
+                self._conn.execute(
+                    f"ALTER TABLE execution_events ADD COLUMN {column} {declaration}"
+                )
         self._conn.commit()
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
-        secret_names = {
-            "apikey",
-            "authorization",
-            "token",
-            "accesstoken",
-            "refreshtoken",
-            "password",
-            "secret",
-            "clientsecret",
-            "env",
-        }
-        if isinstance(value, dict):
-            sanitized = {}
-            for key, item in value.items():
-                normalized = "".join(character for character in str(key).lower() if character.isalnum())
-                sanitized[str(key)] = (
-                    "[REDACTED]"
-                    if normalized in secret_names
-                    else SQLiteControlStore._sanitize(item)
-                )
-            return sanitized
-        if isinstance(value, list):
-            return [SQLiteControlStore._sanitize(item) for item in value]
-        if isinstance(value, str) and len(value) > 16_000:
-            return value[:16_000] + "...[TRUNCATED]"
-        return value
+        return sanitize_event_value(value)
 
     def create_task(self, state: GraphState) -> None:
         state = validate_state(state)
@@ -223,16 +242,91 @@ class SQLiteControlStore:
         ).fetchone()
         return int(row["value"])
 
+    @staticmethod
+    def _artifact_refs(value: Any) -> list[dict[str, Any] | str]:
+        refs: list[dict[str, Any] | str] = []
+
+        def collect(item: Any) -> None:
+            if isinstance(item, dict):
+                if "artifact_id" in item and "sha256" in item:
+                    candidate = {
+                        key: item[key]
+                        for key in ("artifact_id", "kind", "sha256", "size")
+                        if key in item
+                    }
+                    if candidate not in refs:
+                        refs.append(candidate)
+                    return
+                for nested in item.values():
+                    collect(nested)
+            elif isinstance(item, list):
+                for nested in item:
+                    collect(nested)
+
+        collect(value)
+        return refs
+
     def _append_event_tx(
-        self, task_id: str, run_id: str, event_type: str, payload: dict[str, Any], confirmed: bool = False
+        self,
+        task_id: str,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        confirmed: bool = False,
+        *,
+        node_name: str | None = None,
+        attempt: int | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        artifact_refs: list[dict[str, Any] | str] | None = None,
     ) -> int:
         sequence = self._next_sequence_tx(task_id, run_id)
+        event_id = str(uuid.uuid4())
+        now = self.clock.now().isoformat()
+        sanitized_payload = self._sanitize(payload)
+        if node_name is None and isinstance(sanitized_payload.get("node"), str):
+            node_name = sanitized_payload["node"]
+        if attempt is None and isinstance(sanitized_payload.get("attempt"), int):
+            attempt = sanitized_payload["attempt"]
+        if causation_id is None:
+            previous = self._conn.execute(
+                """SELECT event_id FROM execution_events
+                   WHERE task_id=? AND run_id=? ORDER BY sequence_number DESC LIMIT 1""",
+                (task_id, run_id),
+            ).fetchone()
+            causation_id = previous["event_id"] if previous else None
+        sanitized_refs = self._sanitize(
+            artifact_refs if artifact_refs is not None else self._artifact_refs(sanitized_payload)
+        )
         self._conn.execute(
-            "INSERT INTO execution_events VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO execution_events
+               (event_id, schema_version, task_id, run_id, node_name, attempt,
+                sequence_number, event_type, correlation_id, causation_id,
+                payload_json, artifact_refs_json, checkpoint_confirmed, created_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                str(uuid.uuid4()), task_id, run_id, sequence, event_type,
-                json.dumps(self._sanitize(payload), ensure_ascii=False), int(confirmed), self.clock.now().isoformat(),
+                event_id,
+                task_id,
+                run_id,
+                node_name,
+                attempt,
+                sequence,
+                event_type,
+                correlation_id or run_id,
+                causation_id,
+                json.dumps(sanitized_payload, ensure_ascii=False),
+                json.dumps(sanitized_refs, ensure_ascii=False),
+                int(confirmed),
+                now,
             ),
+        )
+        self._conn.execute(
+            """INSERT INTO event_outbox
+               (outbox_id, event_id, task_id, run_id, sequence_number, status,
+                attempts, available_at, claimed_by, claimed_at, published_at,
+                stream_id, last_error, created_at)
+               VALUES (?, ?, ?, ?, ?, 'PENDING', 0, ?, NULL, NULL, NULL, NULL, NULL, ?)""",
+            (str(uuid.uuid4()), event_id, task_id, run_id, sequence, now, now),
         )
         return sequence
 
@@ -407,6 +501,7 @@ class SQLiteControlStore:
                     "replan_request_id": replan_request_id,
                     **(payload or {}),
                 },
+                artifact_refs=[artifact_ref],
             )
             self._conn.execute(
                 "UPDATE task_projection SET run_id=?, status=?, state_revision=?, state_json=?, updated_at=? WHERE task_id=?",
@@ -454,12 +549,17 @@ class SQLiteControlStore:
 
     def confirm_checkpoint(self, task_id: str, run_id: str, revision: int) -> None:
         with self._lock, self._conn:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "UPDATE task_projection SET checkpoint_revision=?, checkpoint_run_id=? WHERE task_id=? AND state_revision=?",
                 (revision, run_id, task_id, revision),
             )
+            if cursor.rowcount != 1:
+                raise StateConflictError(
+                    "checkpoint revision does not match the control projection"
+                )
             self._conn.execute(
-                "UPDATE execution_events SET checkpoint_confirmed=1 WHERE task_id=?", (task_id,)
+                "UPDATE execution_events SET checkpoint_confirmed=1 WHERE task_id=? AND run_id=?",
+                (task_id, run_id),
             )
 
     def reconcile(self, checkpoint_state: GraphState) -> bool:
@@ -476,6 +576,28 @@ class SQLiteControlStore:
         ):
             return False
         with self._lock, self._conn:
+            checkpoint_caught_up = (
+                current["state_revision"] == checkpoint_state["state_revision"]
+                and current["run_id"] == checkpoint_state["run_id"]
+            )
+            if checkpoint_caught_up:
+                self._conn.execute(
+                    """UPDATE execution_events SET checkpoint_confirmed=1
+                       WHERE task_id=? AND run_id=?""",
+                    (checkpoint_state["task_id"], checkpoint_state["run_id"]),
+                )
+            else:
+                self._conn.execute(
+                    """UPDATE event_outbox
+                       SET status='DISCARDED', claimed_by=NULL, claimed_at=NULL,
+                           last_error='checkpoint reconciliation invalidated event'
+                       WHERE task_id=? AND status IN ('PENDING', 'PROCESSING')
+                         AND event_id IN (
+                           SELECT event_id FROM execution_events
+                           WHERE task_id=? AND checkpoint_confirmed=0
+                         )""",
+                    (checkpoint_state["task_id"], checkpoint_state["task_id"]),
+                )
             self._append_event_tx(
                 checkpoint_state["task_id"], checkpoint_state["run_id"], "projection_reconciled",
                 {"from_revision": current["state_revision"], "to_revision": checkpoint_state["state_revision"]}, True,
@@ -490,22 +612,250 @@ class SQLiteControlStore:
             )
         return True
 
-    def events(self, task_id: str, run_id: str | None = None) -> list[dict[str, Any]]:
-        if run_id:
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> ExecutionEvent:
+        item = dict(row)
+        return ExecutionEvent(
+            event_id=item["event_id"],
+            schema_version=int(item["schema_version"]),
+            task_id=item["task_id"],
+            run_id=item["run_id"],
+            node_name=item.get("node_name"),
+            attempt=item.get("attempt"),
+            event_type=item["event_type"],
+            sequence_number=int(item["sequence_number"]),
+            correlation_id=item.get("correlation_id"),
+            causation_id=item.get("causation_id"),
+            payload=json.loads(item["payload_json"]),
+            artifact_refs=json.loads(item.get("artifact_refs_json") or "[]"),
+            checkpoint_confirmed=bool(item["checkpoint_confirmed"]),
+            created_at=item["created_at"],
+        )
+
+    def append_event(
+        self,
+        task_id: str,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        node_name: str | None = None,
+        attempt: int | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        artifact_refs: list[dict[str, Any] | str] | None = None,
+    ) -> ExecutionEvent:
+        """Append a non-state event (for example a message) and enqueue it atomically."""
+
+        with self._lock, self._conn:
+            task = self._conn.execute(
+                "SELECT run_id FROM task_projection WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise KeyError(task_id)
+            sequence = self._append_event_tx(
+                task_id,
+                run_id,
+                event_type,
+                payload or {},
+                True,
+                node_name=node_name,
+                attempt=attempt,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                artifact_refs=artifact_refs,
+            )
+        records = self.event_records(
+            task_id, run_id, after_sequence=sequence - 1, limit=1
+        )
+        if not records:
+            raise RuntimeError("persisted event could not be read")
+        return records[0]
+
+    def event_records(
+        self,
+        task_id: str,
+        run_id: str | None = None,
+        *,
+        after_sequence: int = 0,
+        limit: int | None = None,
+    ) -> list[ExecutionEvent]:
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be non-negative")
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        clauses = ["task_id=?", "sequence_number>?"]
+        parameters: list[Any] = [task_id, after_sequence]
+        if run_id is not None:
+            clauses.append("run_id=?")
+            parameters.append(run_id)
+        sql = f"SELECT * FROM execution_events WHERE {' AND '.join(clauses)}"
+        sql += " ORDER BY sequence_number" if run_id is not None else " ORDER BY created_at, rowid"
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters.append(limit)
+        rows = self._conn.execute(sql, parameters).fetchall()
+        return [self._event_from_row(row) for row in rows]
+
+    def events(
+        self,
+        task_id: str,
+        run_id: str | None = None,
+        *,
+        after_sequence: int = 0,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            event.to_state_dict()
+            for event in self.event_records(
+                task_id,
+                run_id,
+                after_sequence=after_sequence,
+                limit=limit,
+            )
+        ]
+
+    def event(self, event_id: str) -> ExecutionEvent | None:
+        row = self._conn.execute(
+            "SELECT * FROM execution_events WHERE event_id=?", (event_id,)
+        ).fetchone()
+        return self._event_from_row(row) if row else None
+
+    def trace(self, task_id: str, run_id: str | None = None) -> dict[str, Any]:
+        records = self.event_records(task_id, run_id)
+        sequences = [event.sequence_number for event in records]
+        gaps: list[int] = []
+        if run_id is not None and sequences:
+            present = set(sequences)
+            gaps = [
+                sequence
+                for sequence in range(sequences[0], sequences[-1] + 1)
+                if sequence not in present
+            ]
+        view = TraceView(
+            task_id=task_id,
+            run_id=run_id,
+            event_count=len(records),
+            first_sequence=sequences[0] if sequences and run_id is not None else None,
+            last_sequence=sequences[-1] if sequences and run_id is not None else None,
+            sequence_gaps=gaps,
+            events=records,
+        )
+        return view.to_state_dict()
+
+    @staticmethod
+    def _outbox_from_row(row: sqlite3.Row) -> OutboxEntry:
+        return OutboxEntry.from_state_dict(dict(row))
+
+    def claim_outbox(
+        self,
+        relay_id: str,
+        *,
+        limit: int = 100,
+        lease_seconds: int = 30,
+    ) -> list[tuple[OutboxEntry, ExecutionEvent]]:
+        if not relay_id:
+            raise ValueError("relay_id is required")
+        if limit < 1 or lease_seconds < 1:
+            raise ValueError("limit and lease_seconds must be positive")
+        now_value = self.clock.now()
+        now = now_value.isoformat()
+        stale_at = (now_value - timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._conn.execute(
+                    """SELECT o.* FROM event_outbox o
+                       JOIN execution_events e ON e.event_id=o.event_id
+                       WHERE e.checkpoint_confirmed=1 AND (
+                            (o.status='PENDING' AND o.available_at<=?)
+                         OR (o.status='PROCESSING' AND o.claimed_at<=?)
+                       )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM event_outbox earlier
+                           WHERE earlier.task_id=o.task_id
+                             AND earlier.run_id=o.run_id
+                             AND earlier.sequence_number<o.sequence_number
+                             AND earlier.status NOT IN ('PUBLISHED', 'DISCARDED')
+                         )
+                       ORDER BY o.created_at, o.rowid LIMIT ?""",
+                    (now, stale_at, limit),
+                ).fetchall()
+                claimed: list[OutboxEntry] = []
+                for row in rows:
+                    self._conn.execute(
+                        """UPDATE event_outbox
+                           SET status='PROCESSING', attempts=attempts+1,
+                               claimed_by=?, claimed_at=?
+                           WHERE outbox_id=?""",
+                        (relay_id, now, row["outbox_id"]),
+                    )
+                    refreshed = self._conn.execute(
+                        "SELECT * FROM event_outbox WHERE outbox_id=?",
+                        (row["outbox_id"],),
+                    ).fetchone()
+                    claimed.append(self._outbox_from_row(refreshed))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        result: list[tuple[OutboxEntry, ExecutionEvent]] = []
+        for entry in claimed:
+            event = self.event(entry.event_id)
+            if event is None:
+                raise RuntimeError(f"outbox event is missing: {entry.event_id}")
+            result.append((entry, event))
+        return result
+
+    def publish_outbox(self, outbox_id: str, *, relay_id: str, stream_id: str) -> None:
+        now = self.clock.now().isoformat()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """UPDATE event_outbox
+                   SET status='PUBLISHED', published_at=?, stream_id=?,
+                       claimed_by=NULL, claimed_at=NULL, last_error=NULL
+                   WHERE outbox_id=? AND status='PROCESSING' AND claimed_by=?""",
+                (now, stream_id, outbox_id, relay_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateConflictError("outbox claim is no longer owned by this relay")
+
+    def retry_outbox(
+        self,
+        outbox_id: str,
+        *,
+        relay_id: str,
+        error: str,
+        delay_seconds: int,
+    ) -> None:
+        if delay_seconds < 0:
+            raise ValueError("delay_seconds must be non-negative")
+        available_at = (
+            self.clock.now() + timedelta(seconds=delay_seconds)
+        ).isoformat()
+        safe_error = str(self._sanitize(error))[:2_000]
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """UPDATE event_outbox
+                   SET status='PENDING', available_at=?, claimed_by=NULL,
+                       claimed_at=NULL, last_error=?
+                   WHERE outbox_id=? AND status='PROCESSING' AND claimed_by=?""",
+                (available_at, safe_error, outbox_id, relay_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateConflictError("outbox claim is no longer owned by this relay")
+
+    def outbox_entries(self, status: str | None = None) -> list[OutboxEntry]:
+        if status is None:
             rows = self._conn.execute(
-                "SELECT * FROM execution_events WHERE task_id=? AND run_id=? ORDER BY sequence_number",
-                (task_id, run_id),
+                "SELECT * FROM event_outbox ORDER BY created_at, rowid"
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM execution_events WHERE task_id=? ORDER BY created_at, sequence_number", (task_id,)
+                "SELECT * FROM event_outbox WHERE status=? ORDER BY created_at, rowid",
+                (status,),
             ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["payload"] = json.loads(item.pop("payload_json"))
-            result.append(item)
-        return result
+        return [self._outbox_from_row(row) for row in rows]
 
     def idempotent_result(self, task_id: str, operation: str, key: str) -> dict[str, Any] | None:
         row = self._conn.execute(

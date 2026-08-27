@@ -6,7 +6,7 @@
 python -m pytest skills tests -q
 ```
 
-当前测试覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、诊断前基线测试、Java 字段类型与源码证据、审批中断/过期、Checkpoint/Restore、Progress 双指纹、费用与活跃时间预算、控制命令幂等、版本化 Plan、自动/人工 Replanning、Plan 修订预算、异常规范化和旧入口兼容。测试数量以 CI 实际结果为准。
+当前测试覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、诊断前基线测试、Java 字段类型与源码证据、审批中断/过期、Checkpoint/Restore、Progress 双指纹、费用与活跃时间预算、控制命令幂等、版本化 Plan、自动/人工 Replanning、Plan 修订预算、可靠事件、Transactional Outbox、Redis Streams/WebSocket 基础、异常规范化和旧入口兼容。测试数量以 CI 实际结果为准。
 
 ## 2. Phase 1 CLI
 
@@ -34,7 +34,15 @@ python -m devpilot task plan --task-id TASK_ID
 python -m pytest tests/test_phase2_planning.py -q
 ```
 
-## 4. Legacy 本地 Demo
+## 4. Phase 3 可靠事件
+
+事件、Outbox、Redis Streams 适配和 WebSocket 订阅基础的专项测试：
+
+```powershell
+python -m pytest tests/test_phase3_events.py -q
+```
+
+## 5. Legacy 本地 Demo
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_python --approval confirm --output-dir out\demo
@@ -47,7 +55,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 
 `--approval auto` 用于自动化测试；真人演示使用 `confirm` 走审批分支。
 
-## 5. 失败与回滚路径
+## 6. 失败与回滚路径
 
 自动化用例：`tests/test_pipeline.py::test_pipeline_rolls_back_when_verification_fails`
 
@@ -56,7 +64,7 @@ python runtime\pipeline.py --repo demo\sample_python --approval confirm --output
 - 源文件恢复为修改前内容
 - 任务状态 `failed`，报告中保留失败证据
 
-## 6. Legacy MCP Server 冒烟
+## 7. Legacy MCP Server 冒烟
 
 ```powershell
 python -m mcp run mcp\git_server.py
@@ -65,7 +73,7 @@ python -m mcp run mcp\testing_server.py
 
 生产环境通过 Higress 注册后，在 Element 中让 Worker 调用 Git/Testing 工具验证。
 
-## 7. Legacy AgentTeams 集成冒烟
+## 8. Legacy AgentTeams 集成冒烟
 
 1. 打开 Element：`http://127.0.0.1:18088`，登录管理员账号。
 2. 给 Manager 发任务，例如：“对 A:\agent\devpilot-infra\demo\sample_python 做一次缺陷诊断”。
@@ -79,7 +87,7 @@ docker exec hiclaw-controller hiclaw get teams
 
 5. 查看 Worker 日志确认无鉴权或工具调用错误。
 
-## 8. Java 示例（兼容链路）
+## 9. Java 示例（兼容链路）
 
 ```powershell
 python runtime\pipeline.py --repo demo\sample_spring --approval auto --output-dir out\spring

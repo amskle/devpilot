@@ -590,6 +590,32 @@ class TaskService:
     def replan_history(self, task_id: str) -> list[dict[str, Any]]:
         return self.control.replan_requests(task_id)
 
+    def event_history(
+        self,
+        task_id: str,
+        run_id: str | None = None,
+        *,
+        after_sequence: int = 0,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read durable, redacted events for cursor catch-up or audit."""
+
+        if self.control.get_task(task_id) is None:
+            raise KeyError(task_id)
+        return self.control.events(
+            task_id,
+            run_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+
+    def trace(self, task_id: str, run_id: str | None = None) -> dict[str, Any]:
+        """Return the complete persisted event trace for a task or run."""
+
+        if self.control.get_task(task_id) is None:
+            raise KeyError(task_id)
+        return self.control.trace(task_id, run_id)
+
     def resume(
         self,
         task_id: str,

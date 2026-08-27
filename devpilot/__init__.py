@@ -1,4 +1,4 @@
-"""DevPilot Phase 1 runtime."""
+"""DevPilot LangGraph runtime."""
 
 from devpilot.domain.state import CURRENT_SCHEMA_VERSION, GraphState, create_initial_state
 

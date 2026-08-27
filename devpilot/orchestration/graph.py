@@ -141,6 +141,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="baseline_context",
             event_type="baseline_context_built",
             allowed={"baseline_context_ref", "execution_budget"},
+            payload={
+                "tool_operation_id": result.operation_id,
+                "tool_attempts": result.attempts,
+                "baseline_context_ref": ref.to_state_dict(),
+            },
         )
 
     def baseline_verification(state: GraphState) -> GraphState:
@@ -180,7 +185,13 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="baseline_verification",
             event_type="baseline_verification_executed",
             allowed={"verification", "execution_budget"},
-            payload={"exit_code": result.output.get("exit_code"), "passed": result.output.get("passed")},
+            payload={
+                "exit_code": result.output.get("exit_code"),
+                "passed": result.output.get("passed"),
+                "tool_operation_id": result.operation_id,
+                "tool_attempts": result.attempts,
+                "report_ref": report_ref.to_state_dict(),
+            },
         )
 
     def planning(state: GraphState) -> GraphState:
@@ -243,7 +254,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             document=document,
             artifact_ref=ref,
             replan_request_id=replan_request.replan_request_id if replan_request else None,
-            payload={"agent_summary": invocation.result.summary},
+            payload={
+                "agent_summary": invocation.result.summary,
+                "tool_call_refs": invocation.result.tool_call_refs,
+                "token_usage": invocation.result.token_usage,
+            },
         )
 
     def prepare_replan(state: GraphState) -> GraphState:
@@ -386,7 +401,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 "status",
                 "pause_reason",
             },
-            payload={"agent_summary": invocation.result.summary},
+            payload={
+                "agent_summary": invocation.result.summary,
+                "tool_call_refs": invocation.result.tool_call_refs,
+                "token_usage": invocation.result.token_usage,
+            },
         )
 
     def patch_generation(state: GraphState) -> GraphState:
@@ -414,6 +433,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         budget = invocation.execution_budget
         diffs: list[str] = []
         files: list[str] = []
+        tool_operations: list[dict[str, Any]] = []
         for index, operation in enumerate(invocation.result.structured_output["operations"]):
             result = runtime.tools.execute(
                 "patch-generate",
@@ -429,6 +449,9 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 execution_budget=budget,
             )
             budget = result.execution_budget
+            tool_operations.append(
+                {"operation_id": result.operation_id, "attempts": result.attempts}
+            )
             if result.output["diff"]:
                 diffs.append(result.output["diff"])
                 files.append(operation["target_file"])
@@ -449,7 +472,15 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="patch_generation",
             event_type="patch_proposed",
             allowed={"patch_proposal", "execution_budget"},
-            payload={"patch_id": proposal.patch_id, "changed_files": files},
+            payload={
+                "patch_id": proposal.patch_id,
+                "changed_files": files,
+                "patch_ref": proposal.patch_ref,
+                "agent_summary": invocation.result.summary,
+                "agent_tool_call_refs": invocation.result.tool_call_refs,
+                "tool_operations": tool_operations,
+                "token_usage": invocation.result.token_usage,
+            },
         )
 
     def risk_assessment(state: GraphState) -> GraphState:
@@ -505,7 +536,12 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="risk_assessment",
             event_type="risk_assessed",
             allowed={"execution_budget", "patch_proposal", "pending_approval", "status", "pause_reason"},
-            payload={"decision": decision, "risk_report_ref": risk_ref.to_state_dict()},
+            payload={
+                "decision": decision,
+                "risk_report_ref": risk_ref.to_state_dict(),
+                "tool_operation_id": result.operation_id,
+                "tool_attempts": result.attempts,
+            },
         )
 
     def approval_gate(state: GraphState) -> GraphState:
@@ -593,7 +629,11 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="apply_patch",
             event_type="patch_applied",
             allowed={"workspace_ref", "active_recovery_point_ref", "patch_proposal"},
-            payload={"revision": updated_workspace.current_revision},
+            payload={
+                "revision": updated_workspace.current_revision,
+                "recovery_point_ref": recovery_ref.to_state_dict(),
+                "patch_ref": proposal.patch_ref,
+            },
         )
 
     def run_verification(state: GraphState) -> GraphState:
@@ -618,7 +658,13 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="run_verification",
             event_type="verification_executed",
             allowed={"verification", "execution_budget"},
-            payload={"exit_code": result.output.get("exit_code")},
+            payload={
+                "exit_code": result.output.get("exit_code"),
+                "passed": result.output.get("passed"),
+                "tool_operation_id": result.operation_id,
+                "tool_attempts": result.attempts,
+                "report_ref": report_ref.to_state_dict(),
+            },
         )
 
     def parse_verification(state: GraphState) -> GraphState:
@@ -801,7 +847,12 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             node="review",
             event_type="task_completed",
             allowed={"review", "execution_budget", "status", "pause_reason"},
-            payload={"agent_summary": invocation.result.summary, "status": status},
+            payload={
+                "agent_summary": invocation.result.summary,
+                "status": status,
+                "tool_call_refs": invocation.result.tool_call_refs,
+                "token_usage": invocation.result.token_usage,
+            },
         )
 
     builder.add_node("workspace_setup", workspace_setup)
