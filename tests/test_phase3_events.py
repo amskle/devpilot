@@ -47,6 +47,7 @@ def test_event_envelope_cursor_trace_redaction_and_causation(tmp_path):
         )
 
         assert event.sequence_number == 2
+        assert event.state_revision is None
         assert event.node_name == "diagnosis"
         assert event.attempt == 2
         assert event.correlation_id == "run"
@@ -172,6 +173,46 @@ def test_reconcile_confirms_event_when_checkpoint_caught_up(tmp_path):
             for entry in store.outbox_entries()
         }
         assert statuses["checkpoint_written_before_confirmation"] == "PENDING"
+    finally:
+        store.close()
+
+
+def test_checkpoint_confirmation_is_bounded_by_state_revision(tmp_path):
+    store = _store(tmp_path)
+    try:
+        initial = create_initial_state("task", "run")
+        changed = dict(initial)
+        changed["status"] = "RUNNING"
+        advanced = store.transition(
+            changed,
+            expected_revision=0,
+            event_type="revision_one",
+        )
+        with store._lock, store._conn:
+            store._append_event_tx(
+                "task",
+                "run",
+                "future_revision",
+                {},
+                state_revision=2,
+            )
+
+        store.confirm_checkpoint("task", "run", advanced["state_revision"])
+        records = {
+            event.event_type: event for event in store.event_records("task", "run")
+        }
+        assert records["revision_one"].state_revision == 1
+        assert records["revision_one"].checkpoint_confirmed is True
+        assert records["future_revision"].state_revision == 2
+        assert records["future_revision"].checkpoint_confirmed is False
+
+        transport = InMemoryEventTransport()
+        relay = OutboxRelay(store, transport, relay_id="relay-a")
+        assert relay.run_once().published == 2
+        assert [event.event_type for event in transport.events] == [
+            "task_created",
+            "revision_one",
+        ]
     finally:
         store.close()
 
@@ -314,6 +355,13 @@ def test_existing_phase1_event_table_is_migrated_in_place(tmp_path):
         columns = {
             row[1] for row in store._conn.execute("PRAGMA table_info(execution_events)")
         }
-        assert {"node_name", "attempt", "correlation_id", "causation_id", "artifact_refs_json"} <= columns
+        assert {
+            "state_revision",
+            "node_name",
+            "attempt",
+            "correlation_id",
+            "causation_id",
+            "artifact_refs_json",
+        } <= columns
     finally:
         store.close()

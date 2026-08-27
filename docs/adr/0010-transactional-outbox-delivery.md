@@ -9,7 +9,7 @@ LangGraph 节点、控制投影和审计事件必须保持原子关系，但 SQL
 
 ## 决策
 
-SQLite MVP 在追加 `execution_events` 的同一事务中写入一条 `event_outbox`。独立 `OutboxRelay` 只领取已确认对应 LangGraph Checkpoint 的事件，使用有限租约领取待发布记录，提交到 Redis Streams 后再将 Outbox 标记为 `PUBLISHED`。发布失败按有界指数退避重新开放记录；Relay 只在上一条事件成功后领取下一条，保持数据库顺序。Checkpoint 对账会把失效分支的未确认 Outbox 标记为 `DISCARDED`，避免后续 Checkpoint 误发布旧分支事件。
+SQLite MVP 在追加 `execution_events` 的同一事务中写入一条 `event_outbox`。状态事件同时记录产生它的 `state_revision`，Checkpoint 只确认同一 Run 中 revision 不高于当前 Checkpoint 的事件。独立 `OutboxRelay` 只领取已确认事件，使用有限租约领取待发布记录，提交到 Redis Streams 后再将 Outbox 标记为 `PUBLISHED`。发布失败按有界指数退避重新开放记录；Relay 只在上一条事件成功后领取下一条，保持数据库顺序。Checkpoint 对账会把失效分支的未确认 Outbox 标记为 `DISCARDED`，避免后续 Checkpoint 误发布旧分支事件。
 
 传输语义是至少一次。Relay 在 Redis 接收消息后、确认 Outbox 前崩溃时允许重复投递，所有下游消费者必须使用不可变 `event_id` 去重。Redis Streams 是实时传输层，不是审计真相；断线客户端始终使用 Event Store 的 `(run_id, sequence_number)` 游标补拉。
 

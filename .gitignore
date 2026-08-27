@@ -13,3 +13,9 @@ out/
 *.sqlite
 change.md
 change2.md
+/_manual_tmp1/
+/_tmp*/
+/_tmp/
+/.test_tmp/
+/_pt*/
+/tmp*/

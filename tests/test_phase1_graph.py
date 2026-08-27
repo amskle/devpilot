@@ -157,6 +157,58 @@ def test_checkpoint_survives_service_restart(tmp_path):
         second.close()
 
 
+def test_per_task_model_override_selects_gateway_and_survives_resume(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    gateway = no_action_scenario()
+    selected_models = []
+
+    def gateway_factory(model_name):
+        selected_models.append(model_name)
+        return gateway
+
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway_factory=gateway_factory,
+        model="default-model",
+    )
+    try:
+        final = service.create_task(repo, "inspect", model="task-model")
+        assert selected_models == ["default-model", "task-model"]
+        selected_models.clear()
+
+        restored = service.get_state(final["task_id"])
+        assert restored == final
+        assert selected_models == ["task-model"]
+        snapshot = json.loads(
+            service.artifacts.read_text(
+                final["task_id"],
+                final["run_id"],
+                {"sha256": final["execution_budget"]["pricing_snapshot_ref"]},
+            )
+        )
+        assert snapshot["selected_model"] == "task-model"
+    finally:
+        service.close()
+
+
+def test_injected_gateway_rejects_unenforceable_model_override_before_task_creation(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=no_action_scenario(),
+        model="fixed-model",
+    )
+    try:
+        try:
+            service.create_task(repo, "inspect", model="different-model")
+            raise AssertionError("unenforceable model override was accepted")
+        except ValueError as exc:
+            assert "gateway_factory" in str(exc)
+        assert service.control.list_tasks() == []
+    finally:
+        service.close()
+
+
 def test_max_cost_without_catalog_price_fails_before_execution(tmp_path):
     repo = make_repo(tmp_path / "repo")
     service = TaskService(data_dir=tmp_path / "data", gateway=no_action_scenario())

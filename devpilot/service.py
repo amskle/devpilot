@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
@@ -40,6 +40,7 @@ class TaskService:
         *,
         data_dir: Path | None = None,
         gateway: ModelGateway | None = None,
+        gateway_factory: Callable[[str], ModelGateway] | None = None,
         clock: Clock | None = None,
         approval_ttl_seconds: int = 86_400,
         verification_command: str | None = None,
@@ -54,9 +55,19 @@ class TaskService:
         self.workspace_manager = WorkspaceManager(self.data_dir / "workspaces", self.clock)
         self.tools = ToolExecutor(build_default_registry())
         self.model_name = model or "gpt-5-mini"
-        self.gateway = gateway or LazyOpenAICompatibleGateway(
-            model=self.model_name, base_url=base_url
-        )
+        if gateway is not None and gateway_factory is not None:
+            raise ValueError("gateway and gateway_factory are mutually exclusive")
+        self._gateway_factory = gateway_factory
+        if gateway is None and self._gateway_factory is None:
+            self._gateway_factory = lambda selected_model: LazyOpenAICompatibleGateway(
+                model=selected_model,
+                base_url=base_url,
+            )
+        if gateway is not None:
+            self.gateway = gateway
+        else:
+            assert self._gateway_factory is not None
+            self.gateway = self._gateway_factory(self.model_name)
         self.agents = AgentRunner(self.gateway, self.tools)
         self.approval_ttl_seconds = approval_ttl_seconds
         self.verification_command = verification_command
@@ -85,7 +96,17 @@ class TaskService:
             {"sha256": snapshot_ref},
         )
         catalog, selected_model = PricingCatalog.from_snapshot(json.loads(raw))
-        return catalog, selected_model or self.model_name
+        selected_catalog = catalog if state["execution_budget"].get("max_cost") is not None else None
+        return selected_catalog, selected_model or self.model_name
+
+    def _agents_for_model(self, model_name: str) -> AgentRunner:
+        if model_name == self.model_name:
+            return self.agents
+        if self._gateway_factory is None:
+            raise ValueError(
+                "per-task model override requires a gateway_factory when a gateway is injected"
+            )
+        return AgentRunner(self._gateway_factory(model_name), self.tools)
 
     def _runtime(
         self,
@@ -108,7 +129,7 @@ class TaskService:
             control=self.control,
             workspace_manager=self.workspace_manager,
             tools=self.tools,
-            agents=self.agents,
+            agents=self._agents_for_model(selected_model),
             clock=self.clock,
             approval_ttl_seconds=self.approval_ttl_seconds,
             verification_command=self.verification_command,
@@ -213,18 +234,21 @@ class TaskService:
         catalog = PricingCatalog.from_file(self.data_dir / "pricing" / "catalog.json")
         if selected_budget.max_cost is not None and selected_model not in catalog.entries:
             raise ValueError(f"max_cost requires pricing data for model: {selected_model}")
+        if selected_model != self.model_name and self._gateway_factory is None:
+            raise ValueError(
+                "per-task model override requires a gateway_factory when a gateway is injected"
+            )
         self.workspace_manager.validate_source(repo.resolve(), revision)
         state = create_initial_state(task_id, run_id, budget=selected_budget)
         request_ref = self.artifacts.put_text(task_id, run_id, "task_request", request)
         state["context_delta_ref"] = request_ref.to_state_dict()
-        if selected_budget.max_cost is not None:
-            snapshot = catalog.snapshot(
-                self.artifacts,
-                task_id,
-                run_id,
-                selected_model=selected_model,
-            )
-            state["execution_budget"]["pricing_snapshot_ref"] = snapshot["sha256"]
+        snapshot = catalog.snapshot(
+            self.artifacts,
+            task_id,
+            run_id,
+            selected_model=selected_model,
+        )
+        state["execution_budget"]["pricing_snapshot_ref"] = snapshot["sha256"]
         state = validate_state(state)
         self.control.create_task(state)
         runtime = self._runtime(

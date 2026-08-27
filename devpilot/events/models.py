@@ -17,6 +17,7 @@ class ExecutionEvent(StrictModel):
     schema_version: Literal[1] = EVENT_SCHEMA_VERSION
     task_id: str
     run_id: str
+    state_revision: int | None = Field(default=None, ge=0)
     node_name: str | None = None
     attempt: int | None = Field(default=None, ge=0)
     event_type: str

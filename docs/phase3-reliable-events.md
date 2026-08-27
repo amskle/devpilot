@@ -48,7 +48,7 @@ Fork/Restore 创建新 Run 后从新 Run 的序号 1 开始。跨 Run Trace 可�
 
 ## 投递语义
 
-Redis 发布采用至少一次语义。下游根据 `event_id` 去重，不能根据 Event 类型或 Payload 猜测重复。状态转换事件只有在相应 LangGraph Checkpoint 已确认后才能被 Relay 领取；对账判定失效的旧分支记录进入 `DISCARDED`。非状态事件不依赖 Checkpoint，在 Event/Outbox 事务提交后即可领取。Outbox 状态：
+Redis 发布采用至少一次语义。下游根据 `event_id` 去重，不能根据 Event 类型或 Payload 猜测重复。每个状态转换事件记录产生它的 `state_revision`。Checkpoint 确认只更新同一 Run 中 `state_revision <= checkpoint revision` 的事件；更高 revision 的并发或未来事件保持未确认，不能被 Relay 领取。对账判定失效的旧分支记录进入 `DISCARDED`。非状态事件不依赖 Checkpoint，在 Event/Outbox 事务提交后即可领取。Outbox 状态：
 
 ```text
 PENDING → PROCESSING → PUBLISHED

@@ -102,6 +102,7 @@ class SQLiteControlStore:
               schema_version INTEGER NOT NULL,
               task_id TEXT NOT NULL,
               run_id TEXT NOT NULL,
+              state_revision INTEGER,
               node_name TEXT,
               attempt INTEGER,
               sequence_number INTEGER NOT NULL,
@@ -186,6 +187,7 @@ class SQLiteControlStore:
             row[1] for row in self._conn.execute("PRAGMA table_info(execution_events)").fetchall()
         }
         event_migrations = {
+            "state_revision": "INTEGER",
             "node_name": "TEXT",
             "attempt": "INTEGER",
             "correlation_id": "TEXT",
@@ -216,7 +218,14 @@ class SQLiteControlStore:
                     state["state_revision"], state["run_id"], json.dumps(state, ensure_ascii=False), now,
                 ),
             )
-            self._append_event_tx(state["task_id"], state["run_id"], "task_created", {"status": state["status"]}, True)
+            self._append_event_tx(
+                state["task_id"],
+                state["run_id"],
+                "task_created",
+                {"status": state["status"]},
+                True,
+                state_revision=state["state_revision"],
+            )
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM task_projection WHERE task_id = ?", (task_id,)).fetchone()
@@ -274,6 +283,7 @@ class SQLiteControlStore:
         payload: dict[str, Any],
         confirmed: bool = False,
         *,
+        state_revision: int | None = None,
         node_name: str | None = None,
         attempt: int | None = None,
         correlation_id: str | None = None,
@@ -300,14 +310,15 @@ class SQLiteControlStore:
         )
         self._conn.execute(
             """INSERT INTO execution_events
-               (event_id, schema_version, task_id, run_id, node_name, attempt,
+               (event_id, schema_version, task_id, run_id, state_revision, node_name, attempt,
                 sequence_number, event_type, correlation_id, causation_id,
                 payload_json, artifact_refs_json, checkpoint_confirmed, created_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 event_id,
                 task_id,
                 run_id,
+                state_revision,
                 node_name,
                 attempt,
                 sequence,
@@ -348,7 +359,13 @@ class SQLiteControlStore:
             if row is None or int(row["state_revision"]) != expected_revision:
                 actual = None if row is None else int(row["state_revision"])
                 raise StateConflictError(f"expected state_revision {expected_revision}, actual {actual}")
-            self._append_event_tx(updated["task_id"], updated["run_id"], event_type, payload or {})
+            self._append_event_tx(
+                updated["task_id"],
+                updated["run_id"],
+                event_type,
+                payload or {},
+                state_revision=new_revision,
+            )
             self._conn.execute(
                 "UPDATE task_projection SET run_id=?, status=?, state_revision=?, state_json=?, updated_at=? WHERE task_id=?",
                 (
@@ -398,6 +415,7 @@ class SQLiteControlStore:
                 updated["run_id"],
                 "replan_prepared",
                 {"replan_request_id": request.replan_request_id, **(payload or {})},
+                state_revision=new_revision,
             )
             self._conn.execute(
                 "UPDATE task_projection SET run_id=?, status=?, state_revision=?, state_json=?, updated_at=? WHERE task_id=?",
@@ -501,6 +519,7 @@ class SQLiteControlStore:
                     "replan_request_id": replan_request_id,
                     **(payload or {}),
                 },
+                state_revision=new_revision,
                 artifact_refs=[artifact_ref],
             )
             self._conn.execute(
@@ -558,8 +577,10 @@ class SQLiteControlStore:
                     "checkpoint revision does not match the control projection"
                 )
             self._conn.execute(
-                "UPDATE execution_events SET checkpoint_confirmed=1 WHERE task_id=? AND run_id=?",
-                (task_id, run_id),
+                """UPDATE execution_events SET checkpoint_confirmed=1
+                   WHERE task_id=? AND run_id=?
+                     AND state_revision IS NOT NULL AND state_revision<=?""",
+                (task_id, run_id, revision),
             )
 
     def reconcile(self, checkpoint_state: GraphState) -> bool:
@@ -583,8 +604,13 @@ class SQLiteControlStore:
             if checkpoint_caught_up:
                 self._conn.execute(
                     """UPDATE execution_events SET checkpoint_confirmed=1
-                       WHERE task_id=? AND run_id=?""",
-                    (checkpoint_state["task_id"], checkpoint_state["run_id"]),
+                       WHERE task_id=? AND run_id=?
+                         AND state_revision IS NOT NULL AND state_revision<=?""",
+                    (
+                        checkpoint_state["task_id"],
+                        checkpoint_state["run_id"],
+                        checkpoint_state["state_revision"],
+                    ),
                 )
             else:
                 self._conn.execute(
@@ -601,6 +627,7 @@ class SQLiteControlStore:
             self._append_event_tx(
                 checkpoint_state["task_id"], checkpoint_state["run_id"], "projection_reconciled",
                 {"from_revision": current["state_revision"], "to_revision": checkpoint_state["state_revision"]}, True,
+                state_revision=checkpoint_state["state_revision"],
             )
             self._conn.execute(
                 "UPDATE task_projection SET run_id=?, status=?, state_revision=?, checkpoint_revision=?, checkpoint_run_id=?, state_json=?, updated_at=? WHERE task_id=?",
@@ -620,6 +647,7 @@ class SQLiteControlStore:
             schema_version=int(item["schema_version"]),
             task_id=item["task_id"],
             run_id=item["run_id"],
+            state_revision=item.get("state_revision"),
             node_name=item.get("node_name"),
             attempt=item.get("attempt"),
             event_type=item["event_type"],
@@ -639,6 +667,7 @@ class SQLiteControlStore:
         event_type: str,
         payload: dict[str, Any] | None = None,
         *,
+        state_revision: int | None = None,
         node_name: str | None = None,
         attempt: int | None = None,
         correlation_id: str | None = None,
@@ -659,6 +688,7 @@ class SQLiteControlStore:
                 event_type,
                 payload or {},
                 True,
+                state_revision=state_revision,
                 node_name=node_name,
                 attempt=attempt,
                 correlation_id=correlation_id,
