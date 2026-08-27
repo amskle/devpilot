@@ -52,6 +52,7 @@
 - Dashboard、Task Detail、Timeline、Diff、测试报告。
 - 风险审批、人工介入、恢复操作和 ChangeRequest。
 - 已实现 Vue3/TypeScript 控制台、安全控制请求和可靠事件游标恢复；端到端运行等待 Phase 4 API 合入。
+- 界面设计与原型生成说明见 [Phase 5 UI 设计原型](docs/phase5-ui-design-prototype.md)。
 
 ### Phase 6：分层记忆
 
