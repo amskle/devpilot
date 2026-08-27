@@ -18,7 +18,7 @@ Skill / Git Worktree / Test Execution
 Artifact Store + Event/Task Projection + SQLite Checkpoint
 ```
 
-Phase 1 的执行与一致性语义见 [phase1-execution-contract.md](phase1-execution-contract.md)。
+Phase 1 的执行与一致性语义见 [phase1-execution-contract.md](phase1-execution-contract.md)，Plan 版本与重规划语义见 [phase2-plan-replanning.md](phase2-plan-replanning.md)。
 
 ## Legacy 架构图
 

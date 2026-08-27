@@ -17,7 +17,10 @@ AGENT_SPECS = {
     "diagnosis": AgentSpec(
         agent_id="diagnosis",
         role="Diagnosis",
-        instructions="Diagnose the requested issue using only authorized analysis tools. Return evidence, not hidden reasoning.",
+        instructions=(
+            "Diagnose the requested issue using only authorized analysis tools. Return evidence, not hidden reasoning. "
+            "Use PLAN_INVALID when repository evidence disproves a material assumption in the active Plan; do not edit the Plan."
+        ),
         allowed_tools=("code-analysis", "bug-detection", "security-scan"),
         output_schema="DiagnosisSummary",
         model_profile="default",

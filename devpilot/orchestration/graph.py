@@ -21,10 +21,14 @@ from devpilot.domain.models import (
     FailureRecord,
     ModelProfile,
     PatchProposal,
+    PlanDocument,
+    PlanDraft,
     RecoveryPoint,
+    ReplanRequest,
     TaskStatus,
     WorkspaceRef,
 )
+from devpilot.domain.plans import build_plan_document, create_replan_request, plan_reference
 from devpilot.domain.progress import evaluate_progress_signals
 from devpilot.domain.state import GraphState, replace_progress_window, validate_state
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore
@@ -142,12 +146,24 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     def planning(state: GraphState) -> GraphState:
         if state["active_plan_ref"] is not None and state["pending_replan_request"] is None:
             return _merge_transition(runtime, state, {}, node="planning", event_type="plan_reused", allowed=set())
+        replan_request = (
+            ReplanRequest.from_state_dict(state["pending_replan_request"])
+            if state["pending_replan_request"] is not None
+            else None
+        )
+        previous_plan = (
+            PlanDocument.from_state_dict(_read_json(runtime, state, state["active_plan_ref"]))
+            if replan_request is not None
+            else None
+        )
         invocation = runtime.agents.invoke(
             AGENT_SPECS["planning"],
             node_context={
                 "request": runtime.request,
                 "baseline": _read_json(runtime, state, state["baseline_context_ref"]),
-                "mode": "replan" if state["pending_replan_request"] else "initial",
+                "mode": "replan" if replan_request else "initial",
+                "current_plan": previous_plan.to_state_dict() if previous_plan else None,
+                "replan_request": replan_request.to_state_dict() if replan_request else None,
             },
             output_model=OUTPUT_MODELS["PlanDraft"],
             workspace=_workspace(state),
@@ -157,19 +173,73 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         )
         if invocation.result.status != "ok":
             _raise_agent_error(invocation)
-        ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "plan", invocation.result.structured_output)
-        return _merge_transition(
-            runtime,
-            state,
+        draft = PlanDraft.from_state_dict(invocation.result.structured_output)
+        document = build_plan_document(
+            draft,
+            repository_snapshot_id=_workspace(state).current_revision,
+            created_at=runtime.clock.now().isoformat(),
+            previous=previous_plan,
+            replan_request=replan_request,
+            based_on_diagnosis_revision=(
+                replan_request.based_on_diagnosis_revision if replan_request else None
+            ),
+        )
+        artifact = runtime.artifacts.put_json(state["task_id"], state["run_id"], "plan", document.to_state_dict())
+        ref = plan_reference(artifact, document)
+        merged: GraphState = copy.deepcopy(state)
+        merged.update(
             {
-                "active_plan_ref": ref.to_state_dict(),
+                "active_plan_ref": ref,
                 "pending_replan_request": None,
                 "execution_budget": invocation.execution_budget,
-            },
-            node="planning",
-            event_type="plan_activated",
-            allowed={"active_plan_ref", "pending_replan_request", "execution_budget"},
+                "latest_failure": None if replan_request else state["latest_failure"],
+            }
+        )
+        merged["current_node"] = "planning"
+        return runtime.control.activate_plan(
+            validate_state(merged),
+            expected_revision=state["state_revision"],
+            document=document,
+            artifact_ref=ref,
+            replan_request_id=replan_request.replan_request_id if replan_request else None,
             payload={"agent_summary": invocation.result.summary},
+        )
+
+    def prepare_replan(state: GraphState) -> GraphState:
+        if state["pending_replan_request"] is not None:
+            return _merge_transition(
+                runtime, state, {}, node="prepare_replan", event_type="replan_reused", allowed=set()
+            )
+        failure = state["latest_failure"] or {}
+        budget = ExecutionBudget.from_state_dict(state["execution_budget"])
+        if budget.plan_revisions_used >= budget.max_plan_revisions:
+            raise RuntimeError("plan revision budget exhausted before Prepare Replan")
+        request = create_replan_request(
+            task_id=state["task_id"],
+            run_id=state["run_id"],
+            active_plan_ref=state["active_plan_ref"] or {},
+            reason_code=str(failure.get("error_code", "PLAN_INVALID")),
+            summary=str(failure.get("summary", "active plan assumptions are no longer valid")),
+            requested_at=runtime.clock.now().isoformat(),
+            evidence_refs=[str(ref) for ref in failure.get("artifact_refs", []) if ref],
+            based_on_diagnosis_revision=max(0, state["state_revision"] - 1),
+        )
+        updated_budget = budget.model_copy(
+            update={"plan_revisions_used": budget.plan_revisions_used + 1}
+        )
+        merged: GraphState = copy.deepcopy(state)
+        merged.update(
+            {
+                "pending_replan_request": request.to_state_dict(),
+                "execution_budget": updated_budget.to_state_dict(),
+            }
+        )
+        merged["current_node"] = "prepare_replan"
+        return runtime.control.prepare_replan(
+            validate_state(merged),
+            expected_revision=state["state_revision"],
+            request=request,
+            payload={"reason_code": request.reason_code},
         )
 
     def diagnosis(state: GraphState) -> GraphState:
@@ -188,6 +258,27 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             "diagnosis": invocation.result.structured_output,
             "execution_budget": invocation.execution_budget,
         }
+        if invocation.result.structured_output.get("outcome") == "PLAN_INVALID":
+            summary = str(invocation.result.structured_output.get("summary", "Plan assumptions are invalid"))
+            plan_ref = state["active_plan_ref"] or {}
+            failure = FailureRecord(
+                failure_id=f"failure_{uuid.uuid4().hex[:16]}",
+                iteration=ExecutionBudget.from_state_dict(invocation.execution_budget).iterations_used,
+                category="PLAN",
+                error_code="PLAN_INVALID",
+                summary=summary,
+                symptom_fingerprint=hashlib.sha256(
+                    f"{plan_ref.get('plan_id')}:{plan_ref.get('version')}:{summary}".encode()
+                ).hexdigest(),
+                change_fingerprint=None,
+                retry_policy="NEVER",
+                recovery_action="REPLAN",
+                agent_actionable=True,
+                related_files=[],
+                artifact_refs=[],
+                occurred_at=runtime.clock.now().isoformat(),
+            )
+            updates["latest_failure"] = failure.to_state_dict()
         if (
             state["latest_failure"] is not None
             and invocation.result.structured_output.get("outcome") == "NO_ACTION_REQUIRED"
@@ -204,7 +295,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             updates,
             node="diagnosis",
             event_type="diagnosis_completed",
-            allowed={"diagnosis", "execution_budget", "progress_window"},
+            allowed={"diagnosis", "execution_budget", "progress_window", "latest_failure"},
             payload={"agent_summary": invocation.result.summary},
         )
 
@@ -388,8 +479,8 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             checkpoint_id=f"{state['run_id']}:{state['state_revision']}",
             workspace_id=workspace.workspace_id,
             repository_snapshot_id=workspace.current_revision,
-            plan_id=(state["active_plan_ref"] or {}).get("artifact_id", "unknown"),
-            plan_version=1,
+            plan_id=(state["active_plan_ref"] or {}).get("plan_id", "unknown"),
+            plan_version=int((state["active_plan_ref"] or {}).get("version", 1)),
             state_revision=state["state_revision"],
             created_at=runtime.clock.now().isoformat(),
         )
@@ -521,6 +612,29 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     def failure_router(state: GraphState) -> GraphState:
         budget = ExecutionBudget.from_state_dict(state["execution_budget"])
+        recovery_action = (state["latest_failure"] or {}).get("recovery_action")
+        if recovery_action == "REPLAN":
+            if budget.plan_revisions_used >= budget.max_plan_revisions:
+                return _merge_transition(
+                    runtime,
+                    state,
+                    {
+                        "status": TaskStatus.WAITING_HUMAN_INTERVENTION.value,
+                        "pause_reason": "PLAN_REVISION_BUDGET_EXHAUSTED",
+                    },
+                    node="failure_router",
+                    event_type="human_intervention_required",
+                    allowed={"status", "pause_reason"},
+                    payload={"reason": "PLAN_REVISION_BUDGET_EXHAUSTED"},
+                )
+            return _merge_transition(
+                runtime,
+                state,
+                {"status": TaskStatus.RUNNING.value, "pause_reason": None},
+                node="failure_router",
+                event_type="replan_scheduled",
+                allowed={"status", "pause_reason"},
+            )
         entries = state["progress_window"].get("entries", [])
         symptom_aba = len(entries) >= 3 and entries[-1].get("symptom_fingerprint") == entries[-3].get("symptom_fingerprint")
         change_aba = len(entries) >= 3 and entries[-1].get("change_fingerprint") == entries[-3].get("change_fingerprint")
@@ -597,6 +711,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     builder.add_node("workspace_setup", workspace_setup)
     builder.add_node("baseline_context", baseline_context)
+    builder.add_node("prepare_replan", prepare_replan)
     builder.add_node("planning", planning)
     builder.add_node("diagnosis", diagnosis)
     builder.add_node("patch_generation", patch_generation)
@@ -616,7 +731,9 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     builder.add_conditional_edges(
         "diagnosis",
         lambda s: (
-            "failed_no_action"
+            "plan_invalid"
+            if (s["diagnosis"] or {}).get("outcome") == "PLAN_INVALID"
+            else "failed_no_action"
             if s["latest_failure"] is not None
             and (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED"
             else "review"
@@ -624,6 +741,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             else "patch_generation"
         ),
         {
+            "plan_invalid": "failure_router",
             "failed_no_action": "failure_router",
             "review": "review",
             "patch_generation": "patch_generation",
@@ -652,8 +770,15 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     builder.add_edge("evaluate_progress", "failure_router")
     builder.add_conditional_edges(
         "failure_router",
-        lambda s: "diagnosis" if s["status"] == TaskStatus.RUNNING.value else "end",
-        {"diagnosis": "diagnosis", "end": END},
+        lambda s: (
+            "end"
+            if s["status"] != TaskStatus.RUNNING.value
+            else "prepare_replan"
+            if (s["latest_failure"] or {}).get("recovery_action") == "REPLAN"
+            else "diagnosis"
+        ),
+        {"prepare_replan": "prepare_replan", "diagnosis": "diagnosis", "end": END},
     )
+    builder.add_edge("prepare_replan", "planning")
     builder.add_edge("review", END)
     return builder.compile(checkpointer=checkpointer)

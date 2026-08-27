@@ -24,6 +24,7 @@ from devpilot.domain.models import (
     TaskStatus,
     WorkspaceRef,
 )
+from devpilot.domain.plans import create_replan_request
 from devpilot.domain.state import GraphState, create_initial_state, validate_state
 from devpilot.errors import BudgetExceededError, PolicyDeniedError, StateConflictError
 from devpilot.orchestration.graph import GraphRuntime, build_graph
@@ -473,7 +474,16 @@ class TaskService:
             ref = old[field]
             if ref:
                 content = self.artifacts.read_bytes(task_id, old["run_id"], ref)
-                restored[field] = self.artifacts.put_bytes(task_id, new_run_id, kind, content).to_state_dict()
+                copied_ref = self.artifacts.put_bytes(task_id, new_run_id, kind, content).to_state_dict()
+                if field == "active_plan_ref":
+                    copied_ref.update(
+                        {
+                            key: ref[key]
+                            for key in ("plan_id", "version", "content_hash")
+                            if key in ref
+                        }
+                    )
+                restored[field] = copied_ref
         pricing_ref = old["execution_budget"].get("pricing_snapshot_ref")
         if pricing_ref and not str(pricing_ref).startswith("art_"):
             pricing_content = self.artifacts.read_bytes(
@@ -505,6 +515,80 @@ class TaskService:
         if idempotency_key:
             self.control.save_idempotent_result(task_id, "restore", idempotency_key, result)
         return result
+
+    def replan(
+        self,
+        task_id: str,
+        expected_revision: int,
+        *,
+        reason: str,
+        reason_code: str = "HUMAN_REQUESTED_REPLAN",
+        evidence_refs: list[str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        """Resume an intervention by creating a structured ReplanRequest."""
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, "replan", idempotency_key)
+            if cached:
+                return validate_state(cached)
+        state = self.get_state(task_id)
+        if state["state_revision"] != expected_revision:
+            raise StateConflictError(f"expected state_revision {expected_revision}, actual {state['state_revision']}")
+        if state["status"] != TaskStatus.WAITING_HUMAN_INTERVENTION.value:
+            raise StateConflictError("task is not waiting for human intervention")
+        if state["active_plan_ref"] is None:
+            raise StateConflictError("task has no active Plan to revise")
+        budget = ExecutionBudget.from_state_dict(state["execution_budget"])
+        if budget.plan_revisions_used >= budget.max_plan_revisions:
+            raise BudgetExceededError("plan revision budget exhausted")
+        replan_request = create_replan_request(
+            task_id=task_id,
+            run_id=state["run_id"],
+            active_plan_ref=state["active_plan_ref"],
+            reason_code=reason_code,
+            summary=reason,
+            requested_at=self.clock.now().isoformat(),
+            evidence_refs=evidence_refs,
+        )
+        updated = copy.deepcopy(state)
+        proposal = updated.get("patch_proposal")
+        if proposal is not None:
+            proposal = {**proposal, "status": "INVALIDATED"}
+        updated.update(
+            {
+                "status": TaskStatus.RUNNING.value,
+                "pause_reason": None,
+                "pending_replan_request": replan_request.to_state_dict(),
+                "execution_budget": budget.model_copy(
+                    update={"plan_revisions_used": budget.plan_revisions_used + 1}
+                ).to_state_dict(),
+                "patch_proposal": proposal,
+                "diagnosis": None,
+                "verification": None,
+                "review": None,
+                "current_node": "prepare_replan",
+            }
+        )
+        request = self._request_from_state(state)
+        graph = build_graph(self._runtime(source_repo=None, request=request, state=state), self.checkpointer)
+        updated = self.control.prepare_replan(
+            validate_state(updated),
+            expected_revision=expected_revision,
+            request=replan_request,
+            payload={"reason_code": reason_code, "source": "human_intervention"},
+        )
+        graph.update_state(self._config(state["run_id"]), updated, as_node="prepare_replan")
+        self.control.confirm_checkpoint(task_id, state["run_id"], updated["state_revision"])
+        result = self._invoke(graph, state["run_id"], Command(goto="planning"))
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, "replan", idempotency_key, result)
+        return result
+
+    def plan_history(self, task_id: str) -> list[dict[str, Any]]:
+        return self.control.plans(task_id)
+
+    def replan_history(self, task_id: str) -> list[dict[str, Any]]:
+        return self.control.replan_requests(task_id)
 
     def resume(
         self,

@@ -68,7 +68,7 @@
 
 ---
 
-当前 Phase 0+1 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、CLI 暂停恢复和脚本化 Fake Model 测试。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
+当前 Phase 0+1+2 已实现 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚，以及结构化版本化 Plan、ReplanRequest、Planning Agent 复用和 Plan 原子切换。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
 ## 当前系统架构
 
@@ -82,7 +82,7 @@ CLI
   → SQLite Control Projection + Event Store / Artifact Store
 ```
 
-详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，架构决策见 [docs/adr/](docs/adr/)。
+详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，架构决策见 [docs/adr/](docs/adr/)。
 
 ## Legacy AgentTeams 架构资料
 
@@ -195,7 +195,11 @@ $env:DEVPILOT_MODEL = "your-model"
 python -m devpilot task create --repo C:\path\to\clean-git-repo --request "修复失败测试"
 ```
 
-源仓库必须是干净 Git 根目录。DevPilot 在用户数据目录中创建隔离 clone/worktree，绝不直接修改源工作树。可用 `python -m devpilot --help` 查看审批、拒绝、取消、回滚、恢复和对账命令。
+源仓库必须是干净 Git 根目录。DevPilot 在用户数据目录中创建隔离 clone/worktree，绝不直接修改源工作树。可用 `python -m devpilot --help` 查看审批、拒绝、取消、回滚、恢复、重规划和对账命令。任务进入人工介入后，可以使用：
+
+```powershell
+python -m devpilot task replan --task-id TASK_ID --expected-revision REVISION --reason "原计划假设不成立，需要调整方案"
+```
 
 旧 `runtime/pipeline.py` 仍是兼容入口，但只转发到上述 LangGraph 后端。
 

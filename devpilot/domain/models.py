@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -127,8 +127,60 @@ class PlanDraft(StrictModel):
     risks: list[str] = Field(default_factory=list)
 
 
+class PlanDocument(StrictModel):
+    """Immutable, versioned plan content stored as an artifact."""
+
+    plan_id: str
+    version: int = Field(ge=1)
+    parent_version: int | None = Field(default=None, ge=1)
+    created_by: str
+    created_at: str
+    change_reason: str | None = None
+    based_on_diagnosis_revision: int | None = Field(default=None, ge=0)
+    repository_snapshot_id: str
+    summary: str
+    tasks: list[dict[str, Any]]
+    acceptance_criteria: list[str]
+    risks: list[str] = Field(default_factory=list)
+    content_hash: str
+
+    @model_validator(mode="after")
+    def validate_version_chain(self):
+        if self.version == 1 and self.parent_version is not None:
+            raise ValueError("initial Plan must not have a parent version")
+        if self.version > 1 and self.parent_version != self.version - 1:
+            raise ValueError("Plan parent_version must be the immediately preceding version")
+        if len(self.content_hash) != 64 or any(character not in "0123456789abcdef" for character in self.content_hash):
+            raise ValueError("Plan content_hash must be a lowercase SHA-256 digest")
+        return self
+
+
+class PlanLifecycle(StrictModel):
+    plan_id: str
+    version: int = Field(ge=1)
+    status: Literal["ACTIVE", "SUPERSEDED"]
+    activated_at: str | None = None
+    superseded_at: str | None = None
+
+
+class ReplanRequest(StrictModel):
+    """Immutable instruction asking the Planning agent for a new plan version."""
+
+    replan_request_id: str
+    task_id: str
+    run_id: str
+    reason_code: str
+    summary: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_change_request_id: str | None = None
+    requested_from_plan_id: str
+    requested_from_plan_version: int = Field(ge=1)
+    based_on_diagnosis_revision: int | None = Field(default=None, ge=0)
+    requested_at: str
+
+
 class DiagnosisSummary(StrictModel):
-    outcome: Literal["NO_ACTION_REQUIRED", "ISSUE_FOUND"]
+    outcome: Literal["NO_ACTION_REQUIRED", "ISSUE_FOUND", "PLAN_INVALID"]
     summary: str
     issues: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -38,6 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("list")
     status = commands.add_parser("status")
     status.add_argument("--task-id", required=True)
+    plan = commands.add_parser("plan")
+    plan.add_argument("--task-id", required=True)
 
     for name in ("approve", "reject"):
         decision = commands.add_parser(name)
@@ -69,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--expected-revision", type=int, required=True)
     resume.add_argument("--idempotency-key", default=None)
 
+    replan = commands.add_parser("replan")
+    replan.add_argument("--task-id", required=True)
+    replan.add_argument("--expected-revision", type=int, required=True)
+    replan.add_argument("--reason", required=True)
+    replan.add_argument("--idempotency-key", default=None)
+
     admin = groups.add_parser("admin")
     admin_commands = admin.add_subparsers(dest="command", required=True)
     reconcile = admin_commands.add_parser("reconcile")
@@ -90,11 +98,24 @@ def main(argv: list[str] | None = None) -> None:
             return
         elif args.command == "status":
             state = service.get_state(args.task_id)
+        elif args.command == "plan":
+            print(json.dumps(service.plan_history(args.task_id), ensure_ascii=False, indent=2))
+            return
         elif args.command == "resume":
             key = args.idempotency_key or str(uuid.uuid4())
             if args.idempotency_key is None:
                 print(f"idempotency_key={key}", file=sys.stderr)
             state = service.resume(args.task_id, args.expected_revision, idempotency_key=key)
+        elif args.command == "replan":
+            key = args.idempotency_key or str(uuid.uuid4())
+            if args.idempotency_key is None:
+                print(f"idempotency_key={key}", file=sys.stderr)
+            state = service.replan(
+                args.task_id,
+                args.expected_revision,
+                reason=args.reason,
+                idempotency_key=key,
+            )
         elif args.command in {"approve", "reject"}:
             key = args.idempotency_key or str(uuid.uuid4())
             if args.idempotency_key is None:
