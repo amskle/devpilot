@@ -11,7 +11,7 @@ Phase 5 在 `frontend/vue3/` 提供 Vue 3 + TypeScript 控制台：
 - 可靠事件：先按 `(run_id, after_sequence)` 从 Event Store 补拉，再用短期票据建立 WebSocket；按 `event_id` 去重，序号缺口触发重新补拉。
 - 响应式与无障碍基础：键盘可操作控件、语义化状态、移动端侧栏，以及内置字体资源的静态构建。
 
-当前代码库尚未包含 Phase 4 FastAPI 实现。前端已经按冻结契约完成网络适配；端到端运行需要先合入或启动 Phase 4 服务。前端不使用模拟数据作为生产回退。
+当前代码库已包含 Phase 4 FastAPI 实现，前端按同一冻结契约完成网络适配；启动 `python -m devpilot api` 后即可端到端联调。前端不使用模拟数据作为生产回退。
 
 ## 安全与一致性
 
@@ -47,7 +47,7 @@ Phase 2/3 修正也进入前端契约：
 | 恢复点 | `GET /tasks/{task_id}/recovery-points` |
 | 需求变更 | `POST /tasks/{task_id}/change-requests` |
 
-Phase 4 实现应返回当前 `TaskState`，并在详情响应中提供由价格快照解析出的只读 `model_profile`；不得仅回显服务默认模型。
+Phase 4 返回当前 `TaskState`，并在详情响应中提供由价格快照解析出的只读 `model_profile`，不会仅回显服务默认模型。
 
 ## 本地运行
 

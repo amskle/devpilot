@@ -46,12 +46,13 @@
 
 - 任务、审批、取消、回滚、恢复和事件 API。
 - 认证、授权、幂等和并发控制。
+- 已实现带 OpenAPI 注解的 REST/WebSocket 控制面、任务级授权、短期事件票据和正式 ChangeRequest；详见 [Phase 4 控制面](docs/phase4-fastapi-control-plane.md)。
 
 ### Phase 5：Vue3 前端
 
 - Dashboard、Task Detail、Timeline、Diff、测试报告。
 - 风险审批、人工介入、恢复操作和 ChangeRequest。
-- 已实现 Vue3/TypeScript 控制台、安全控制请求和可靠事件游标恢复；端到端运行等待 Phase 4 API 合入。
+- 已实现 Vue3/TypeScript 控制台、安全控制请求和可靠事件游标恢复，可与 Phase 4 API 直接联调。
 - 界面设计与原型生成说明见 [Phase 5 UI 设计原型](docs/phase5-ui-design-prototype.md)。
 
 ### Phase 6：分层记忆
@@ -70,7 +71,7 @@
 
 ---
 
-当前 Phase 0+1+2+3 和 Phase 5 前端已实现。核心运行时包含 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏、WebSocket 订阅基础和完整 Trace。Vue3 控制台已覆盖 Dashboard、Task Detail、可靠 Timeline、Diff/验证报告与人工控制；完整联调依赖 Phase 4 FastAPI。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
+当前 Phase 0～5 已实现。核心运行时包含 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏和完整 Trace。FastAPI 控制面提供认证、任务授权、幂等并发控制、可靠事件与 WebSocket 票据；Vue3 控制台已覆盖 Dashboard、Task Detail、Timeline、Diff/验证报告与人工控制。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
 ## 当前系统架构
 
@@ -214,7 +215,7 @@ npm ci
 npm run dev
 ```
 
-开发模式默认把 `/api` 转发到 `http://127.0.0.1:8000`。当前分支尚未包含 Phase 4 FastAPI，因此需要相应服务才能进行端到端操作；类型检查、组件测试和生产构建可以独立执行。
+开发模式默认把 `/api` 转发到 `http://127.0.0.1:8000`。先运行 `python -m devpilot api` 即可进行端到端操作；类型检查、组件测试和生产构建也可以独立执行。
 
 ### Legacy AgentTeams 资料
 

@@ -179,6 +179,19 @@ class ReplanRequest(StrictModel):
     requested_at: str
 
 
+class ChangeRequest(StrictModel):
+    """Immutable user-authored request to revise an active task plan."""
+
+    change_request_id: str
+    task_id: str
+    run_id: str
+    content: str = Field(min_length=1, max_length=20_000)
+    requested_by: str
+    requested_at: str
+    expected_state_revision: int = Field(ge=0)
+    confirm_patch_invalidation: bool = False
+
+
 class DiagnosisSummary(StrictModel):
     outcome: Literal["NO_ACTION_REQUIRED", "ISSUE_FOUND", "PLAN_INVALID"]
     summary: str

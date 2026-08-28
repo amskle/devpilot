@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="devpilot")
     parser.add_argument("--data-dir", default=None)
     groups = parser.add_subparsers(dest="group", required=True)
+    api = groups.add_parser("api", help="run the Phase 4 FastAPI control plane")
+    api.add_argument("--host", default="127.0.0.1")
+    api.add_argument("--port", type=int, default=8000)
+    api.add_argument("--reload", action="store_true")
     task = groups.add_parser("task")
     commands = task.add_subparsers(dest="command", required=True)
 
@@ -86,6 +90,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    if args.group == "api":
+        if (
+            args.host not in {"127.0.0.1", "localhost", "::1"}
+            and not os.environ.get("DEVPILOT_API_TOKENS")
+        ):
+            raise SystemExit(
+                "DEVPILOT_API_TOKENS must be configured before binding the API to a non-loopback host"
+            )
+        if args.data_dir:
+            os.environ["DEVPILOT_DATA_DIR"] = str(Path(args.data_dir).resolve())
+        import uvicorn
+
+        uvicorn.run(
+            "devpilot.api.app:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+        )
+        return
     service = _service(args)
     try:
         if args.group == "admin":

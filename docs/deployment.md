@@ -14,6 +14,24 @@ $env:DEVPILOT_MODEL = "model-name"
 python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失败测试"
 ```
 
+## Phase 4 API
+
+本机开发可使用默认 Token `devpilot-local` 启动，并在 `/docs` 中授权试调：
+
+```powershell
+python -m devpilot api --host 127.0.0.1 --port 8000
+```
+
+共享环境必须覆盖默认 Token：
+
+```powershell
+$env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
+$env:DEVPILOT_API_CORS_ORIGINS = "https://devpilot.example.com"
+python -m devpilot api --host 0.0.0.0 --port 8000
+```
+
+完整接口、安全和试调说明见 [Phase 4 控制面](phase4-fastapi-control-plane.md)。
+
 ## Legacy AgentTeams 模式
 
 1. 启动 Docker Desktop，并安装 AgentTeams：

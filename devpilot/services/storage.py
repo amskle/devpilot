@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from devpilot.clock import Clock, SystemClock
-from devpilot.domain.models import ArtifactRef, PlanDocument, PlanLifecycle, ReplanRequest
+from devpilot.domain.models import ArtifactRef, ChangeRequest, PlanDocument, PlanLifecycle, ReplanRequest
 from devpilot.domain.state import GraphState, validate_state
 from devpilot.errors import StateConflictError
 from devpilot.events.models import ExecutionEvent, OutboxEntry, TraceView
@@ -144,6 +144,14 @@ class SQLiteControlStore:
               created_at TEXT NOT NULL,
               PRIMARY KEY(task_id, operation, idempotency_key)
             );
+            CREATE TABLE IF NOT EXISTS idempotency_inputs (
+              task_id TEXT NOT NULL,
+              operation TEXT NOT NULL,
+              idempotency_key TEXT NOT NULL,
+              request_hash TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY(task_id, operation, idempotency_key)
+            );
             CREATE TABLE IF NOT EXISTS plan_documents (
               task_id TEXT NOT NULL,
               run_id TEXT NOT NULL,
@@ -176,6 +184,22 @@ class SQLiteControlStore:
               status TEXT NOT NULL,
               created_at TEXT NOT NULL,
               consumed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS change_requests (
+              change_request_id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              request_json TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              accepted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS change_requests_task
+              ON change_requests(task_id, created_at);
+            CREATE TABLE IF NOT EXISTS task_owners (
+              task_id TEXT PRIMARY KEY,
+              subject TEXT NOT NULL,
+              created_at TEXT NOT NULL
             );
             """
         )
@@ -243,6 +267,33 @@ class SQLiteControlStore:
             item["state"] = json.loads(item.pop("state_json"))
             result.append(item)
         return result
+
+    def bind_task_owner(self, task_id: str, subject: str) -> None:
+        """Bind a task to one API subject without allowing ownership changes."""
+
+        if not subject:
+            raise ValueError("subject must not be empty")
+        with self._lock, self._conn:
+            task = self._conn.execute(
+                "SELECT 1 FROM task_projection WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise KeyError(task_id)
+            existing = self._conn.execute(
+                "SELECT subject FROM task_owners WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if existing is not None and existing["subject"] != subject:
+                raise StateConflictError("task already belongs to another subject")
+            self._conn.execute(
+                "INSERT OR IGNORE INTO task_owners(task_id, subject, created_at) VALUES (?, ?, ?)",
+                (task_id, subject, self.clock.now().isoformat()),
+            )
+
+    def task_owner(self, task_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT subject FROM task_owners WHERE task_id=?", (task_id,)
+        ).fetchone()
+        return str(row["subject"]) if row else None
 
     def _next_sequence_tx(self, task_id: str, run_id: str) -> int:
         row = self._conn.execute(
@@ -426,6 +477,90 @@ class SQLiteControlStore:
             )
         return validate_state(updated)
 
+    def prepare_change_request(
+        self,
+        state: GraphState,
+        *,
+        expected_revision: int,
+        change_request: ChangeRequest,
+        replan_request: ReplanRequest,
+        invalidated_approval_id: str | None,
+        invalidated_patch_id: str | None,
+    ) -> GraphState:
+        """Accept a ChangeRequest and prepare its ReplanRequest atomically."""
+
+        updated = validate_state(state)
+        if updated["pending_replan_request"] != replan_request.to_state_dict():
+            raise ValueError("pending_replan_request does not match persisted request")
+        if change_request.task_id != updated["task_id"] or change_request.run_id != updated["run_id"]:
+            raise ValueError("ChangeRequest does not belong to this task run")
+        if replan_request.source_change_request_id != change_request.change_request_id:
+            raise ValueError("ReplanRequest does not reference the ChangeRequest")
+        new_revision = expected_revision + 1
+        updated["state_revision"] = new_revision
+        accepted_at = self.clock.now().isoformat()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT state_revision FROM task_projection WHERE task_id=?", (updated["task_id"],)
+            ).fetchone()
+            if row is None or int(row["state_revision"]) != expected_revision:
+                actual = None if row is None else int(row["state_revision"])
+                raise StateConflictError(f"expected state_revision {expected_revision}, actual {actual}")
+            self._conn.execute(
+                """INSERT INTO change_requests
+                   (change_request_id, task_id, run_id, request_json, status, created_at, accepted_at)
+                   VALUES (?, ?, ?, ?, 'ACCEPTED', ?, ?)""",
+                (
+                    change_request.change_request_id,
+                    change_request.task_id,
+                    change_request.run_id,
+                    json.dumps(change_request.to_state_dict(), ensure_ascii=False),
+                    change_request.requested_at,
+                    accepted_at,
+                ),
+            )
+            self._conn.execute(
+                """INSERT INTO replan_requests
+                   (replan_request_id, task_id, run_id, request_json, status, created_at, consumed_at)
+                   VALUES (?, ?, ?, ?, 'PENDING', ?, NULL)""",
+                (
+                    replan_request.replan_request_id,
+                    replan_request.task_id,
+                    replan_request.run_id,
+                    json.dumps(replan_request.to_state_dict(), ensure_ascii=False),
+                    replan_request.requested_at,
+                ),
+            )
+            event_payload = {
+                "change_request_id": change_request.change_request_id,
+                "replan_request_id": replan_request.replan_request_id,
+                "requested_by": change_request.requested_by,
+            }
+            self._append_event_tx(
+                updated["task_id"], updated["run_id"], "change_request_accepted",
+                event_payload, state_revision=new_revision,
+            )
+            if invalidated_approval_id is not None:
+                self._append_event_tx(
+                    updated["task_id"], updated["run_id"], "approval_invalidated",
+                    {"approval_id": invalidated_approval_id, "change_request_id": change_request.change_request_id},
+                    state_revision=new_revision,
+                )
+            if invalidated_patch_id is not None:
+                self._append_event_tx(
+                    updated["task_id"], updated["run_id"], "patch_invalidated",
+                    {"patch_id": invalidated_patch_id, "change_request_id": change_request.change_request_id},
+                    state_revision=new_revision,
+                )
+            self._conn.execute(
+                "UPDATE task_projection SET run_id=?, status=?, state_revision=?, state_json=?, updated_at=? WHERE task_id=?",
+                (
+                    updated["run_id"], updated["status"], new_revision,
+                    json.dumps(updated, ensure_ascii=False), accepted_at, updated["task_id"],
+                ),
+            )
+        return validate_state(updated)
+
     def activate_plan(
         self,
         state: GraphState,
@@ -563,6 +698,16 @@ class SQLiteControlStore:
         ).fetchall()
         return [
             {**json.loads(row["request_json"]), "status": row["status"], "consumed_at": row["consumed_at"]}
+            for row in rows
+        ]
+
+    def change_requests(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT request_json, status, accepted_at FROM change_requests WHERE task_id=? ORDER BY created_at",
+            (task_id,),
+        ).fetchall()
+        return [
+            {**json.loads(row["request_json"]), "status": row["status"], "accepted_at": row["accepted_at"]}
             for row in rows
         ]
 
@@ -893,6 +1038,32 @@ class SQLiteControlStore:
             (task_id, operation, key),
         ).fetchone()
         return json.loads(row["result_json"]) if row else None
+
+    def bind_idempotency_input(
+        self,
+        task_id: str,
+        operation: str,
+        key: str,
+        request_hash: str,
+    ) -> None:
+        """Reject reuse of one idempotency key for a different command payload."""
+
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                """SELECT request_hash FROM idempotency_inputs
+                   WHERE task_id=? AND operation=? AND idempotency_key=?""",
+                (task_id, operation, key),
+            ).fetchone()
+            if row is not None and row["request_hash"] != request_hash:
+                raise StateConflictError(
+                    "Idempotency-Key was already used with a different request payload"
+                )
+            self._conn.execute(
+                """INSERT OR IGNORE INTO idempotency_inputs
+                   (task_id, operation, idempotency_key, request_hash, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (task_id, operation, key, request_hash, self.clock.now().isoformat()),
+            )
 
     def save_idempotent_result(self, task_id: str, operation: str, key: str, result: dict[str, Any]) -> None:
         with self._conn:

@@ -17,10 +17,12 @@ from devpilot.agents.runner import AgentRunner
 from devpilot.clock import Clock, SystemClock
 from devpilot.domain.models import (
     ApprovalRequest,
+    ChangeRequest,
     ExecutionBudget,
     FailureRecord,
     ModelProfile,
     RecoveryPoint,
+    TERMINAL_STATUSES,
     TaskStatus,
     WorkspaceRef,
 )
@@ -455,6 +457,7 @@ class TaskService:
         task_id: str,
         recovery_point_id: str,
         *,
+        expected_revision: int | None = None,
         idempotency_key: str | None = None,
     ) -> GraphState:
         if idempotency_key:
@@ -462,6 +465,10 @@ class TaskService:
             if cached:
                 return validate_state(cached)
         old = self.get_state(task_id)
+        if expected_revision is not None and old["state_revision"] != expected_revision:
+            raise StateConflictError(
+                f"expected state_revision {expected_revision}, actual {old['state_revision']}"
+            )
         if not old["active_recovery_point_ref"]:
             raise ValueError("task has no active recovery point")
         raw = self.artifacts.read_text(task_id, old["run_id"], {"sha256": old["active_recovery_point_ref"]})
@@ -608,11 +615,265 @@ class TaskService:
             self.control.save_idempotent_result(task_id, "replan", idempotency_key, result)
         return result
 
+    def change_request(
+        self,
+        task_id: str,
+        expected_revision: int,
+        *,
+        content: str,
+        requested_by: str,
+        confirm_patch_invalidation: bool,
+        idempotency_key: str | None = None,
+    ) -> GraphState:
+        """Accept a user ChangeRequest and enter the existing replanning path."""
+
+        operation = "change-requests"
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, operation, idempotency_key)
+            if cached:
+                return validate_state(cached)
+        state = self.get_state(task_id)
+        if state["state_revision"] != expected_revision:
+            raise StateConflictError(
+                f"expected state_revision {expected_revision}, actual {state['state_revision']}"
+            )
+        if state["status"] in TERMINAL_STATUSES:
+            raise StateConflictError("terminal tasks cannot be changed in place")
+        if state["active_plan_ref"] is None:
+            raise StateConflictError("task has no active Plan to revise")
+        if (
+            state["status"] == TaskStatus.WAITING_RISK_APPROVAL.value
+            and not confirm_patch_invalidation
+        ):
+            raise StateConflictError(
+                "confirm_patch_invalidation is required while risk approval is pending"
+            )
+        normalized_content = content.strip()
+        if not normalized_content:
+            raise ValueError("ChangeRequest content must not be empty")
+        budget = ExecutionBudget.from_state_dict(state["execution_budget"])
+        if budget.plan_revisions_used >= budget.max_plan_revisions:
+            raise BudgetExceededError("plan revision budget exhausted")
+        requested_at = self.clock.now().isoformat()
+        change = ChangeRequest(
+            change_request_id=f"change_{uuid.uuid4().hex[:16]}",
+            task_id=task_id,
+            run_id=state["run_id"],
+            content=normalized_content,
+            requested_by=requested_by,
+            requested_at=requested_at,
+            expected_state_revision=expected_revision,
+            confirm_patch_invalidation=confirm_patch_invalidation,
+        )
+        replan_request = create_replan_request(
+            task_id=task_id,
+            run_id=state["run_id"],
+            active_plan_ref=state["active_plan_ref"],
+            reason_code="USER_CHANGE_REQUEST",
+            summary=normalized_content,
+            requested_at=requested_at,
+            source_change_request_id=change.change_request_id,
+        )
+        updated = copy.deepcopy(state)
+        proposal = updated.get("patch_proposal")
+        invalidated_patch_id = None
+        if proposal is not None:
+            invalidated_patch_id = proposal.get("patch_id")
+            proposal = {**proposal, "status": "INVALIDATED"}
+        approval = updated.get("pending_approval")
+        invalidated_approval_id = approval.get("approval_id") if approval else None
+        updated.update(
+            {
+                "status": TaskStatus.RUNNING.value,
+                "pause_reason": None,
+                "pending_approval": None,
+                "pending_replan_request": replan_request.to_state_dict(),
+                "execution_budget": budget.model_copy(
+                    update={"plan_revisions_used": budget.plan_revisions_used + 1}
+                ).to_state_dict(),
+                "patch_proposal": proposal,
+                "diagnosis": None,
+                "verification": None,
+                "review": None,
+                "current_node": "prepare_replan",
+            }
+        )
+        request = normalized_content
+        graph = build_graph(
+            self._runtime(source_repo=None, request=request, state=state), self.checkpointer
+        )
+        updated = self.control.prepare_change_request(
+            validate_state(updated),
+            expected_revision=expected_revision,
+            change_request=change,
+            replan_request=replan_request,
+            invalidated_approval_id=invalidated_approval_id,
+            invalidated_patch_id=invalidated_patch_id,
+        )
+        graph.update_state(self._config(state["run_id"]), updated, as_node="prepare_replan")
+        self.control.confirm_checkpoint(task_id, state["run_id"], updated["state_revision"])
+        result = self._invoke(graph, state["run_id"], Command(goto="planning"))
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, operation, idempotency_key, result)
+        return result
+
+    def task_view(self, task_id: str) -> dict[str, Any]:
+        """Return the persisted state with read-only API projection fields."""
+
+        state = self.get_state(task_id)
+        projection = self.control.get_task(task_id)
+        if projection is None:  # pragma: no cover - guarded by get_state
+            raise KeyError(task_id)
+        _, selected_model = self._pricing_context(state)
+        return {
+            **copy.deepcopy(state),
+            "request": self._request_from_state(state),
+            "updated_at": projection["updated_at"],
+            "model_profile": ModelProfile(
+                provider="openai-compatible", model=selected_model
+            ).to_state_dict(),
+        }
+
+    def list_task_views(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for projection in self.control.list_tasks():
+            state = projection["state"]
+            if status and state["status"] != status:
+                continue
+            try:
+                request = self._request_from_state(state)
+                _, selected_model = self._pricing_context(state)
+            except (FileNotFoundError, ValueError):
+                request = ""
+                selected_model = self.model_name
+            result.append(
+                {
+                    "task_id": state["task_id"],
+                    "run_id": state["run_id"],
+                    "status": state["status"],
+                    "current_node": state["current_node"],
+                    "state_revision": state["state_revision"],
+                    "pause_reason": state["pause_reason"],
+                    "request": request,
+                    "model": selected_model,
+                    "updated_at": projection["updated_at"],
+                    "execution_budget": state["execution_budget"],
+                    "verification": state["verification"],
+                }
+            )
+        return result
+
+    def plan_documents(self, task_id: str) -> list[dict[str, Any]]:
+        if self.control.get_task(task_id) is None:
+            raise KeyError(task_id)
+        return [
+            {**item["document"], **item["lifecycle"]}
+            for item in self.plan_history(task_id)
+        ]
+
+    def diff_document(self, task_id: str) -> dict[str, Any]:
+        state = self.get_state(task_id)
+        proposal = state.get("patch_proposal")
+        if proposal is None:
+            raise KeyError("diff")
+        return {
+            "patch_id": proposal.get("patch_id"),
+            "text": self.artifacts.read_text(
+                task_id, state["run_id"], proposal["patch_ref"]
+            ),
+            "changed_files": proposal.get("changed_files", []),
+            "patch_hash": proposal.get("patch_hash"),
+        }
+
+    def recovery_points(self, task_id: str) -> list[dict[str, Any]]:
+        state = self.get_state(task_id)
+        reference = state.get("active_recovery_point_ref")
+        if not reference:
+            return []
+        raw = self.artifacts.read_text(
+            task_id, state["run_id"], {"sha256": reference}
+        )
+        return [RecoveryPoint.from_state_dict(json.loads(raw)).to_state_dict()]
+
+    def add_message(
+        self,
+        task_id: str,
+        content: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        operation = "messages"
+        if idempotency_key:
+            cached = self.control.idempotent_result(task_id, operation, idempotency_key)
+            if cached:
+                return cached
+        state = self.get_state(task_id)
+        normalized = content.strip()
+        if not normalized:
+            raise ValueError("message content must not be empty")
+        message = {
+            "message_id": f"message_{uuid.uuid4().hex[:16]}",
+            "role": "user",
+            "content": normalized,
+            "created_at": self.clock.now().isoformat(),
+        }
+        event = self.control.append_event(
+            task_id,
+            state["run_id"],
+            "message_created",
+            message,
+            correlation_id=message["message_id"],
+        )
+        message = dict(event.payload)
+        if idempotency_key:
+            self.control.save_idempotent_result(task_id, operation, idempotency_key, message)
+        return message
+
+    def messages(self, task_id: str) -> list[dict[str, Any]]:
+        state = self.get_state(task_id)
+        request = self._request_from_state(state)
+        events = self.control.event_records(task_id)
+        created_event = next(
+            (event for event in events if event.event_type == "task_created"), None
+        )
+        result: list[dict[str, Any]] = []
+        if request:
+            result.append(
+                {
+                    "message_id": f"message_{task_id}_request",
+                    "role": "user",
+                    "content": request,
+                    "created_at": (
+                        created_event.created_at
+                        if created_event is not None
+                        else self.clock.now().isoformat()
+                    ),
+                }
+            )
+        for event in events:
+            if event.event_type == "message_created":
+                result.append(dict(event.payload))
+                continue
+            summary = event.payload.get("agent_summary")
+            if isinstance(summary, str) and summary.strip():
+                result.append(
+                    {
+                        "message_id": f"message_{event.event_id}",
+                        "role": "assistant",
+                        "content": summary,
+                        "created_at": event.created_at,
+                    }
+                )
+        return result
+
     def plan_history(self, task_id: str) -> list[dict[str, Any]]:
         return self.control.plans(task_id)
 
     def replan_history(self, task_id: str) -> list[dict[str, Any]]:
         return self.control.replan_requests(task_id)
+
+    def change_request_history(self, task_id: str) -> list[dict[str, Any]]:
+        return self.control.change_requests(task_id)
 
     def event_history(
         self,
