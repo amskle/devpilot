@@ -135,7 +135,7 @@ def create_app(
             "then create tasks, inspect durable execution evidence, and issue revision-bound "
             "control commands. Chat messages never execute control operations."
         ),
-        version="0.6.0",
+        version="0.7.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

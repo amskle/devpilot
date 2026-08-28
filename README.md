@@ -55,23 +55,23 @@
 - 已实现 Vue3/TypeScript 控制台、安全控制请求和可靠事件游标恢复，可与 Phase 4 API 直接联调。
 - 界面设计与原型生成说明见 [Phase 5 UI 设计原型](docs/phase5-ui-design-prototype.md)。
 
-### Phase 6：分层记忆
+### Phase 6：Redis 分布式控制面
 
-- PostgreSQL 结构化记忆。
-- 开发环境必须使用 Milvus Lite，生产可替换为 Milvus。
-- 将历史 Bug Pattern 向量化写入 Semantic Memory，并保留可追溯的来源引用。
-- Diagnosis 开始前检索相似历史问题；前端展示命中的历史经验、相似度和来源。
-- 按策略检索、Token 限制、来源标注和 Prompt Injection 防护。
+- Redis 共享 WebSocket 单次票据和跨 worker 限流。
+- Transactional Outbox Relay 自动发布 Redis Streams。
+- Redis readiness、故障 fail-closed 与多 worker 部署约束。
+- 详见 [Phase 6 控制面](docs/phase6-distributed-control-plane.md)。
 
 ### Phase 7：Replay 与评测
 
 - Event Replay、State Replay。
 - RecoveryPoint Fork / Re-run。
 - 评测集、指标和模型/Prompt 对比。
+- 已实现无副作用 Event/State Replay、隔离 RecoveryPoint Fork、版本化评测集、真实 Prompt Override、指标报告与同数据集对比；详见 [Phase 7 Replay 与评测](docs/phase7-replay-evaluation.md)。
 
 ---
 
-当前 Phase 0～5 已实现。核心运行时包含 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏和完整 Trace。FastAPI 控制面提供认证、任务授权、幂等并发控制、可靠事件与 WebSocket 票据；Vue3 控制台已覆盖 Dashboard、Task Detail、Timeline、Diff/验证报告与人工控制。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
+当前 Phase 0～7 已实现。核心运行时包含 plain-dict GraphState、SQLite Checkpoint、独立 Git worktree、诊断前基线测试、四类 LLM Agent、唯一 ToolExecutor、Patch 风险审批、确定性验证、有限失败路由、补偿回滚、版本化 Plan 与 Replanning，以及可靠 Event Store、Transactional Outbox、Redis Streams 传输适配、游标补拉、脱敏和完整 Trace。FastAPI 控制面提供认证、任务授权、幂等并发控制、可靠事件与 WebSocket 票据；Vue3 控制台已覆盖 Dashboard、Task Detail、Timeline、Diff/验证报告与人工控制；本地 CLI/Python 服务提供 Replay、RecoveryPoint Fork 和可比较评测报告。原 AgentTeams 声明与 MCP Server 仅作为迁移资料保留，不进入新运行时执行链。
 
 ## 当前系统架构
 
@@ -86,7 +86,7 @@ CLI
   → Redis Streams → WebSocket Subscription Hub
 ```
 
-详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，Phase 3 说明见 [docs/phase3-reliable-events.md](docs/phase3-reliable-events.md)，Phase 5 说明见 [docs/phase5-vue3-frontend.md](docs/phase5-vue3-frontend.md)，架构决策见 [docs/adr/](docs/adr/)。
+详细执行契约见 [docs/phase1-execution-contract.md](docs/phase1-execution-contract.md)，Phase 2 说明见 [docs/phase2-plan-replanning.md](docs/phase2-plan-replanning.md)，Phase 3 说明见 [docs/phase3-reliable-events.md](docs/phase3-reliable-events.md)，Phase 5 说明见 [docs/phase5-vue3-frontend.md](docs/phase5-vue3-frontend.md)，Phase 6 说明见 [docs/phase6-distributed-control-plane.md](docs/phase6-distributed-control-plane.md)，Phase 7 说明见 [docs/phase7-replay-evaluation.md](docs/phase7-replay-evaluation.md)，架构决策见 [docs/adr/](docs/adr/)。
 
 ## Legacy AgentTeams 架构资料
 

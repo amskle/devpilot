@@ -16,6 +16,7 @@ from devpilot.agents.runner import AgentRunner
 from devpilot.clock import Clock
 from devpilot.domain.models import (
     ApprovalRequest,
+    AgentSpec,
     ExecutionBudget,
     FailureRecord,
     ModelProfile,
@@ -52,6 +53,11 @@ class GraphRuntime:
     revision: str = "HEAD"
     model_profile: ModelProfile | None = None
     pricing_catalog: PricingCatalog | None = None
+    agent_specs: dict[str, AgentSpec] | None = None
+
+
+def _agent_spec(runtime: GraphRuntime, agent_id: str) -> AgentSpec:
+    return (runtime.agent_specs or AGENT_SPECS)[agent_id]
 
 
 def _merge_transition(
@@ -206,7 +212,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             else None
         )
         invocation = runtime.agents.invoke(
-            AGENT_SPECS["planning"],
+            _agent_spec(runtime, "planning"),
             node_context={
                 "request": runtime.request,
                 "baseline": _read_json(runtime, state, state["baseline_context_ref"]),
@@ -299,7 +305,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     def diagnosis(state: GraphState) -> GraphState:
         invocation = runtime.agents.invoke(
-            AGENT_SPECS["diagnosis"],
+            _agent_spec(runtime, "diagnosis"),
             node_context={
                 "request": runtime.request,
                 "plan": _read_json(runtime, state, state["active_plan_ref"]),
@@ -409,7 +415,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     def patch_generation(state: GraphState) -> GraphState:
         invocation = runtime.agents.invoke(
-            AGENT_SPECS["patch_generation"],
+            _agent_spec(runtime, "patch_generation"),
             node_context={
                 "request": runtime.request,
                 "plan": _read_json(runtime, state, state["active_plan_ref"]),
@@ -823,7 +829,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
     def review(state: GraphState) -> GraphState:
         outcome = "NO_CHANGES" if (state["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED" else "VERIFIED"
         invocation = runtime.agents.invoke(
-            AGENT_SPECS["review"],
+            _agent_spec(runtime, "review"),
             node_context={"outcome": outcome, "diagnosis": state["diagnosis"], "verification": state["verification"]},
             output_model=OUTPUT_MODELS["ReviewSummary"],
             workspace=_workspace(state),

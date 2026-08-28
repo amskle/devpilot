@@ -10,6 +10,8 @@ python -m pytest skills tests -q
 
 Phase 6 另覆盖跨 worker 单次票据、共享限流、Redis 故障 readiness、生产配置校验和前端终止重连状态。
 
+Phase 7 覆盖 Event digest 稳定性、序号缺口检测、历史 Checkpoint State Replay、RecoveryPoint 隔离 Fork、评测错误隔离、指标聚合、真实 Prompt Override 和同数据集报告比较。
+
 ## 2. Phase 1 CLI
 
 ```powershell
@@ -48,6 +50,12 @@ python -m pytest tests/test_phase3_events.py -q
 
 ```powershell
 python -m pytest tests/test_phase6_distributed_api.py -q
+```
+
+Replay 与评测专项测试：
+
+```powershell
+python -m pytest tests/test_phase7_replay_evaluation.py -q
 ```
 
 ## 5. Phase 5 Vue3 前端

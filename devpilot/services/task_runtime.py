@@ -12,6 +12,7 @@ from typing import Any, Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from devpilot.agents.definitions import AGENT_SPECS
 from devpilot.agents.model_gateway import LazyOpenAICompatibleGateway, ModelGateway
 from devpilot.agents.runner import AgentRunner
 from devpilot.clock import Clock, SystemClock
@@ -116,11 +117,31 @@ class TaskRuntimeCore:
         state: GraphState | None = None,
         pricing_catalog: PricingCatalog | None = None,
         model_name: str | None = None,
+        prompt_overrides: dict[str, str] | None = None,
     ) -> GraphRuntime:
         selected_model = model_name or self.model_name
         selected_catalog = pricing_catalog
         if state is not None and selected_catalog is None:
             selected_catalog, selected_model = self._pricing_context(state)
+        agent_specs = None
+        if prompt_overrides is not None:
+            unknown = set(prompt_overrides) - set(AGENT_SPECS)
+            if unknown:
+                raise ValueError(
+                    f"unknown prompt override agents: {sorted(unknown)}"
+                )
+            if any(not value.strip() for value in prompt_overrides.values()):
+                raise ValueError("prompt override instructions must not be empty")
+            agent_specs = {
+                agent_id: spec.model_copy(
+                    update={
+                        "instructions": prompt_overrides.get(
+                            agent_id, spec.instructions
+                        )
+                    }
+                )
+                for agent_id, spec in AGENT_SPECS.items()
+            }
         return GraphRuntime(
             source_repo=source_repo,
             request=request,
@@ -135,6 +156,7 @@ class TaskRuntimeCore:
             revision=revision,
             model_profile=ModelProfile(provider="openai-compatible", model=selected_model),
             pricing_catalog=selected_catalog,
+            agent_specs=agent_specs,
         )
 
     def _request_from_state(
@@ -253,6 +275,8 @@ class TaskRuntimeCore:
         revision: str = "HEAD",
         budget: ExecutionBudget | None = None,
         model: str | None = None,
+        parent_run_id: str | None = None,
+        prompt_overrides: dict[str, str] | None = None,
     ) -> GraphState:
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         run_id = f"run_{uuid.uuid4().hex[:16]}"
@@ -266,7 +290,12 @@ class TaskRuntimeCore:
                 "per-task model override requires a gateway_factory when a gateway is injected"
             )
         self.workspace_manager.validate_source(repo.resolve(), revision)
-        state = create_initial_state(task_id, run_id, budget=selected_budget)
+        state = create_initial_state(
+            task_id,
+            run_id,
+            parent_run_id=parent_run_id,
+            budget=selected_budget,
+        )
         request_ref = self.artifacts.put_text(task_id, run_id, "task_request", request)
         state["context_delta_ref"] = request_ref.to_state_dict()
         snapshot = catalog.snapshot(
@@ -283,6 +312,7 @@ class TaskRuntimeCore:
                 catalog if selected_budget.max_cost is not None else None
             ),
             model_name=selected_model,
+            prompt_overrides=prompt_overrides,
         )
         graph = build_graph(runtime, self.checkpointer)
         return self._invoke(graph, run_id, state)

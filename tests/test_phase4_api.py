@@ -106,7 +106,7 @@ def test_openapi_documents_auth_examples_and_control_contract(tmp_path):
     try:
         app = create_app(service=service, settings=_settings())
         schema = app.openapi()
-        assert schema["info"]["version"] == "0.6.0"
+        assert schema["info"]["version"] == "0.7.0"
         assert "DevPilotBearer" in schema["components"]["securitySchemes"]
         create_schema = schema["components"]["schemas"]["CreateTaskRequest"]
         assert create_schema["properties"]["repo"]["examples"]

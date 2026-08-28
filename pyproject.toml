@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "devpilot-infra"
-version = "0.6.0"
+version = "0.7.0"
 description = "LangGraph-based agent engineering runtime for safe software changes"
 requires-python = ">=3.10"
 dependencies = [

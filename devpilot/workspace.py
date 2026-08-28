@@ -35,6 +35,15 @@ class WorkspaceManager:
 
     def validate_source(self, source_repo: Path, revision: str = "HEAD") -> str:
         source_repo = source_repo.resolve()
+        if self._git(source_repo, "rev-parse", "--is-bare-repository") == "true":
+            git_directory = Path(
+                self._git(source_repo, "rev-parse", "--absolute-git-dir")
+            ).resolve()
+            if git_directory != source_repo:
+                raise ValueError(
+                    f"bare repository path must be Git root: {git_directory}"
+                )
+            return self._git(source_repo, "rev-parse", f"{revision}^{{commit}}")
         top = Path(self._git(source_repo, "rev-parse", "--show-toplevel")).resolve()
         if top != source_repo:
             raise ValueError(f"repository path must be Git root: {top}")

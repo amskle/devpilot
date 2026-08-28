@@ -17,6 +17,7 @@ from devpilot.services.artifacts import ArtifactStore
 from devpilot.services.idempotency_store import IdempotencyStoreMixin
 from devpilot.services.outbox_store import OutboxStoreMixin
 from devpilot.services.plan_store import PlanStoreMixin
+from devpilot.services.replay_store import ReplayEvaluationStoreMixin
 
 
 def default_data_dir() -> Path:
@@ -26,7 +27,12 @@ def default_data_dir() -> Path:
     return (Path.home() / ".devpilot").resolve()
 
 
-class SQLiteControlStore(PlanStoreMixin, OutboxStoreMixin, IdempotencyStoreMixin):
+class SQLiteControlStore(
+    ReplayEvaluationStoreMixin,
+    PlanStoreMixin,
+    OutboxStoreMixin,
+    IdempotencyStoreMixin,
+):
     """Event-first control projection.
 
     A transition appends its audit event and advances the optimistic-lock
@@ -165,6 +171,40 @@ class SQLiteControlStore(PlanStoreMixin, OutboxStoreMixin, IdempotencyStoreMixin
               subject TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS replay_records (
+              replay_id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              replay_type TEXT NOT NULL,
+              source_digest TEXT NOT NULL,
+              result_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS replay_records_task
+              ON replay_records(task_id, created_at);
+            CREATE TABLE IF NOT EXISTS recovery_forks (
+              fork_id TEXT PRIMARY KEY,
+              source_task_id TEXT NOT NULL,
+              source_run_id TEXT NOT NULL,
+              recovery_point_id TEXT NOT NULL,
+              target_task_id TEXT NOT NULL UNIQUE,
+              target_run_id TEXT NOT NULL,
+              result_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS evaluation_runs (
+              evaluation_id TEXT PRIMARY KEY,
+              dataset_name TEXT NOT NULL,
+              dataset_version TEXT NOT NULL,
+              dataset_digest TEXT NOT NULL,
+              model TEXT NOT NULL,
+              prompt_version TEXT NOT NULL,
+              prompt_digest TEXT NOT NULL,
+              report_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS evaluation_runs_dataset
+              ON evaluation_runs(dataset_digest, created_at);
             """
         )
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(task_projection)").fetchall()}
@@ -187,6 +227,17 @@ class SQLiteControlStore(PlanStoreMixin, OutboxStoreMixin, IdempotencyStoreMixin
                 self._conn.execute(
                     f"ALTER TABLE execution_events ADD COLUMN {column} {declaration}"
                 )
+        evaluation_columns = {
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info(evaluation_runs)"
+            ).fetchall()
+        }
+        if "prompt_digest" not in evaluation_columns:
+            self._conn.execute(
+                """ALTER TABLE evaluation_runs
+                   ADD COLUMN prompt_digest TEXT NOT NULL DEFAULT ''"""
+            )
         self._conn.commit()
 
     @staticmethod

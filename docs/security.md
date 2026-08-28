@@ -19,3 +19,10 @@
 - 生产 WebSocket 票据和限流状态存入 Redis。票据仅以哈希 Key 保存并原子消费；Redis 不可用时 fail-closed。
 - Phase 1 通过 workspace 路径边界和 Tool 白名单隔离；容器沙箱是后续增强项。
 - 硬编码密钥由 SecurityScan 检测并仅报告，不自动修复。
+
+## Replay 与评测
+
+- Event/State Replay 只读取 Event Store 和 Checkpoint，不调用模型、工具或控制命令。
+- RecoveryPoint Fork 和评测是显式执行操作，只在隔离 worktree 中运行，不修改源 Task 或源代码仓库。
+- Prompt Override 只能改变 Agent instructions，不能改变 Tool 白名单、路径、预算、审批或恢复策略。
+- 评测数据集中的仓库路径属于本机受信任运维输入；Phase 7 首版不向普通远程 API 暴露批量评测。
