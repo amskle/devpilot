@@ -110,6 +110,7 @@ Conversation-first / Auditable / Calm / Precise / Dual theme
 - 进行中
 - 需要处理
 - 已完成
+- Token 消耗（汇总 Prompt 与 Completion 的真实用量）
 
 只展示接口返回后计算的真实数值。不得填充虚构成功率、成本或节省时间。
 

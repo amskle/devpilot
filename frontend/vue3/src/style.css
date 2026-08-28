@@ -536,6 +536,12 @@ select[aria-invalid="true"] {
   gap: var(--space-2xs);
 }
 
+.metrics-disclosure .metric-wide {
+  grid-column: 1 / -1;
+  padding-block-start: var(--space-xs);
+  border-block-start: var(--rule-size) solid var(--color-rule);
+}
+
 .metrics-disclosure dt {
   color: var(--color-neutral);
   font-size: var(--text-xs);

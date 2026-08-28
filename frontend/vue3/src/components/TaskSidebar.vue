@@ -24,6 +24,10 @@ const metrics = computed(() => ({
   running: tasks.value.filter((task) => !terminalStatuses.has(task.status)).length,
   attention: tasks.value.filter((task) => ["WAITING_RISK_APPROVAL", "WAITING_HUMAN_INTERVENTION"].includes(task.status)).length,
   completed: tasks.value.filter((task) => ["COMPLETED", "COMPLETED_NO_CHANGES"].includes(task.status)).length,
+  tokens: tasks.value.reduce((total, task) => {
+    const budget = task.execution_budget;
+    return total + (budget ? budget.prompt_tokens_used + budget.completion_tokens_used : 0);
+  }, 0),
 }));
 
 async function load(): Promise<void> {
@@ -74,6 +78,7 @@ onMounted(load);
         <div><dt>进行中</dt><dd>{{ metrics.running }}</dd></div>
         <div><dt>需要处理</dt><dd>{{ metrics.attention }}</dd></div>
         <div><dt>已完成</dt><dd>{{ metrics.completed }}</dd></div>
+        <div class="metric-wide"><dt>Token 消耗</dt><dd>{{ metrics.tokens.toLocaleString() }}</dd></div>
       </dl>
     </details>
 

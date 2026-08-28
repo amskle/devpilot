@@ -35,5 +35,7 @@ describe("TaskSidebar", () => {
     expect(disclosure?.open).toBe(true);
     expect(screen.getByText("任务总数")).toBeTruthy();
     expect(screen.getByText("需要处理")).toBeTruthy();
+    expect(screen.getByText("Token 消耗")).toBeTruthy();
+    expect(screen.getByText("3,000")).toBeTruthy();
   });
 });
