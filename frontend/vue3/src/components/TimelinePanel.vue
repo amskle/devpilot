@@ -24,7 +24,7 @@ function eventTitle(event: ExecutionEvent): string {
 <template>
   <section class="panel timeline-panel">
     <header class="panel-header timeline-heading">
-      <div><span class="eyebrow">DURABLE EVENT STREAM</span><h2>执行时间线</h2></div>
+      <h2>执行时间线</h2>
       <span class="connection-state" :class="connection"><i />{{ connectionLabel }}</span>
     </header>
     <div v-if="events.length" class="timeline-list">

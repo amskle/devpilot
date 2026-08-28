@@ -29,7 +29,7 @@ function kind(line: string): string {
 <template>
   <section class="panel diff-panel">
     <header class="panel-header">
-      <div><span class="eyebrow">PATCH PROPOSAL</span><h2>代码变更</h2></div>
+      <h2>代码变更</h2>
       <span v-if="diff" class="hash-chip">{{ diff.patch_hash?.slice(0, 10) }}</span>
     </header>
     <template v-if="diff?.text">

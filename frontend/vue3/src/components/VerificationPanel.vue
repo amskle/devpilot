@@ -6,7 +6,7 @@ defineProps<{ verification: VerificationResult | null }>();
 <template>
   <section class="panel verification-panel">
     <header class="panel-header">
-      <div><span class="eyebrow">DETERMINISTIC RESULT</span><h2>验证报告</h2></div>
+      <h2>验证报告</h2>
       <span v-if="verification?.passed !== undefined" class="result-chip" :class="verification.passed ? 'pass' : 'fail'">
         {{ verification.passed ? "PASS" : "FAIL" }}
       </span>

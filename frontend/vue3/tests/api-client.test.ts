@@ -56,4 +56,17 @@ describe("ApiClient control contract", () => {
     await expect(operation).rejects.toBeInstanceOf(ApiError);
     await expect(operation).rejects.toMatchObject({ status: 409, isConflict: true });
   });
+
+  it("persists ordinary messages independently with an idempotency key", async () => {
+    const created = { message_id: "message_1", role: "user", content: "Add context", created_at: "2026-08-27T00:00:00Z" };
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => response(created));
+    const client = new ApiClient({ baseUrl: "/api", fetchImpl: fetchImpl as typeof fetch });
+
+    await expect(client.sendMessage("task_1", { content: "Add context" })).resolves.toEqual(created);
+
+    expect(fetchImpl).toHaveBeenCalledWith("/api/tasks/task_1/messages", expect.objectContaining({ method: "POST" }));
+    const init = fetchImpl.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get("Idempotency-Key")).toBeTruthy();
+    expect(JSON.parse(String(init.body))).toEqual({ content: "Add context" });
+  });
 });

@@ -1,0 +1,22 @@
+{
+  "scanned_at": "2026-08-27",
+  "target": "frontend/vue3",
+  "font_stack": {
+    "ui": "Inter, Segoe UI Variable, Segoe UI, sans-serif",
+    "mono": "Cascadia Mono, SFMono-Regular, Consolas, monospace",
+    "source": "frontend/vue3/src/style.css"
+  },
+  "palette": {
+    "format": "CSS custom properties",
+    "current_mode": "dark only",
+    "source": "frontend/vue3/src/style.css"
+  },
+  "motion": "motion-cut; no animation library installed",
+  "spacing": "approximately 4px base scale; semantic tokens not yet complete",
+  "framework": "Vue 3 + TypeScript + Vite",
+  "preserve": [
+    "Vue routes and component ownership",
+    "Task and event information architecture",
+    "approval, recovery, and ChangeRequest safety boundaries"
+  ]
+}

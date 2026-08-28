@@ -20,7 +20,7 @@ const rows = computed(() => [
 
 <template>
   <section class="panel budget-panel">
-    <header class="panel-header"><div><span class="eyebrow">RESOURCE GOVERNANCE</span><h2>执行预算</h2></div></header>
+    <header class="panel-header"><h2>执行预算</h2></header>
     <div class="budget-list">
       <div v-for="row in rows" :key="row.label" class="budget-row">
         <div><span>{{ row.label }}</span><strong>{{ row.used }} / {{ row.max }}</strong></div>

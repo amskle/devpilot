@@ -17,7 +17,6 @@ const expired = computed(() => Date.now() >= new Date(props.approval.expires_at)
   <section class="panel action-panel approval-panel">
     <div class="action-icon warning" aria-hidden="true">!</div>
     <div class="action-body">
-      <span class="eyebrow">HUMAN-IN-THE-LOOP</span>
       <h2>高风险变更等待审批</h2>
       <p>请核对 Patch、基础版本和风险报告。批准仅对当前对象生效，状态变化后会被拒绝。</p>
       <dl class="target-grid">

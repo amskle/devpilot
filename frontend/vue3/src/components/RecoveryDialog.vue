@@ -15,7 +15,7 @@ const confirmed = ref(false);
 <template>
   <div class="modal-backdrop" role="presentation" @click.self="emit('close')">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
-      <header><div><span class="eyebrow">RECOVERY CONTROL</span><h2 id="recovery-title">选择恢复点</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="emit('close')">×</button></header>
+      <header><h2 id="recovery-title">选择恢复点</h2><button class="icon-button" type="button" aria-label="关闭" @click="emit('close')">×</button></header>
       <p>回滚是当前 Run 内的补偿操作；完整恢复会创建新 Run，并保留原 Run 审计历史。</p>
       <div class="recovery-list">
         <label v-for="point in points" :key="point.recovery_point_id" :class="{ selected: selected === point.recovery_point_id }">

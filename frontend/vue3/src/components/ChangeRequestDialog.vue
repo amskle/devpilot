@@ -11,7 +11,7 @@ const valid = computed(() => content.value.trim().length >= 5 && (!props.invalid
 <template>
   <div class="modal-backdrop" role="presentation" @click.self="emit('close')">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="change-title">
-      <header><div><span class="eyebrow">FORMAL CONTROL REQUEST</span><h2 id="change-title">提交变更需求</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="emit('close')">×</button></header>
+      <header><h2 id="change-title">提交变更需求</h2><button class="icon-button" type="button" aria-label="关闭" @click="emit('close')">×</button></header>
       <p>这是正式控制操作，会进入 ChangeRequest → ReplanRequest 审计链。普通消息不会修改 Plan。</p>
       <label class="field"><span>新的约束或目标</span><textarea v-model="content" rows="7" placeholder="清晰描述需要调整的目标、验收条件或限制…" /></label>
       <div v-if="invalidatesApproval" class="warning-callout"><strong>当前 Patch 正在等待审批</strong><span>接受本次变更将废弃现有 Approval 和 Patch Proposal，并重新规划。</span></div>

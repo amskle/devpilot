@@ -4,17 +4,18 @@
 
 Phase 5 在 `frontend/vue3/` 提供 Vue 3 + TypeScript 控制台：
 
-- Dashboard：任务状态、成功率、待审批数、人工介入数、筛选和任务创建。
-- Task Detail：当前节点、Run/Revision、实际任务模型、Plan、预算、Timeline、Diff、验证报告和消息记录。
+- Conversation Dashboard：底部任务输入、仓库与运行选项，以及从左侧历史快速恢复任务。
+- Task Detail：以用户/Agent 对话为主线，在同一工作区查看当前节点、Run/Revision、实际任务模型、Plan、预算、Timeline、Diff、验证报告和消息记录。
+- Workspace Shell：左侧任务历史与可展开运行概览；移动端切换为可关闭侧栏；右上角提供持久化的白天/夜间模式。
 - Human-in-the-loop：绑定审批对象的批准/拒绝、取消、回滚、完整恢复和正式 ChangeRequest。
 - 可靠事件：先按 `(run_id, after_sequence)` 从 Event Store 补拉，再用短期票据建立 WebSocket；按 `event_id` 去重，序号缺口触发重新补拉。
-- 响应式与无障碍基础：键盘可操作控件、语义化状态、移动端布局和不依赖远程字体的静态构建。
+- 响应式与无障碍基础：键盘可操作控件、语义化状态、移动端侧栏，以及内置字体资源的静态构建。
 
 当前代码库尚未包含 Phase 4 FastAPI 实现。前端已经按冻结契约完成网络适配；端到端运行需要先合入或启动 Phase 4 服务。前端不使用模拟数据作为生产回退。
 
 ## 安全与一致性
 
-控制操作不从消息文本推断。每个请求使用专用 API，并携带：
+控制操作不从消息文本推断。普通消息通过独立的 `POST /messages` 保存为非状态事件；每个控制请求仍使用专用 API，并携带：
 
 - `expected_state_revision`，HTTP 409 后刷新最新任务，不自动重放到新 Revision。
 - `Idempotency-Key`，网络结果不确定时复用原 Key；收到明确 HTTP 响应后释放。
@@ -38,6 +39,7 @@ Phase 2/3 修正也进入前端契约：
 |---|---|
 | 任务 | `GET/POST /tasks`、`GET /tasks/{task_id}` |
 | 详情 | `GET /tasks/{task_id}/plan|diff|trace|messages` |
+| 普通消息 | `POST /tasks/{task_id}/messages`，只记录上下文，不修改 Plan |
 | 持久事件 | `GET /tasks/{task_id}/events?run_id=&after_sequence=` |
 | 实时票据 | `POST /tasks/{task_id}/event-ticket` |
 | WebSocket | `WS /tasks/{task_id}/events?run_id=&ticket=&after_sequence=` |
@@ -71,4 +73,4 @@ npm test
 npm run build
 ```
 
-测试覆盖控制命令绑定、Bearer 认证、幂等重试、Revision 冲突、事件游标/去重、非状态事件语义，以及审批和 ChangeRequest 二次确认。CI 使用 Node.js 22 执行上述三项检查。
+测试覆盖明暗主题、普通消息与 ChangeRequest 分离、控制命令绑定、Bearer 认证、幂等重试、Revision 冲突、事件游标/去重、非状态事件语义，以及审批和 ChangeRequest 二次确认。CI 使用 Node.js 22 执行上述三项检查。

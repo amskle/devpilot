@@ -9,7 +9,6 @@ defineEmits<{ recovery: []; change: [] }>();
   <section class="panel action-panel intervention-panel">
     <div class="action-icon danger" aria-hidden="true">×</div>
     <div class="action-body">
-      <span class="eyebrow">MANUAL INTERVENTION</span>
       <h2>自动执行已安全停止</h2>
       <p>{{ failure?.summary ?? "任务需要人工判断后才能继续。" }}</p>
       <div v-if="failure" class="failure-code">

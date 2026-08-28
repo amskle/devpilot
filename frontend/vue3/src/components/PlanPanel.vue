@@ -18,7 +18,7 @@ function taskText(task: Record<string, unknown>): string {
 <template>
   <section class="panel plan-panel">
     <header class="panel-header">
-      <div><span class="eyebrow">IMMUTABLE PLAN CHAIN</span><h2>执行计划</h2></div>
+      <h2>执行计划</h2>
       <span v-if="active" class="version-chip">v{{ active.version }}</span>
     </header>
     <template v-if="active">

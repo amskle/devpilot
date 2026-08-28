@@ -173,6 +173,25 @@ export class ApiClient {
     return this.request(`/tasks/${encodeURIComponent(taskId)}/messages`);
   }
 
+  async sendMessage(taskId: string, payload: { content: string }): Promise<Message> {
+    const operation = "messages";
+    const key = idempotencyKey(taskId, operation, payload);
+    try {
+      const result = await this.request<Message>(`/tasks/${encodeURIComponent(taskId)}/messages`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify(payload),
+      });
+      releaseIdempotencyKey(taskId, operation, payload);
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError && error.status !== 0) {
+        releaseIdempotencyKey(taskId, operation, payload);
+      }
+      throw error;
+    }
+  }
+
   getRecoveryPoints(taskId: string): Promise<RecoveryPoint[]> {
     return this.request(`/tasks/${encodeURIComponent(taskId)}/recovery-points`);
   }
