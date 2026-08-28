@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { TaskEventStream } from "@/api/events";
 import type { ApiClient } from "@/api/client";
 import type { ExecutionEvent } from "@/domain/types";
@@ -67,5 +68,30 @@ describe("TaskEventStream", () => {
     expect(stream.lastSequence).toBe(0);
     expect(socket.closed).toBe(true);
     stream.stop();
+  });
+
+  it.each([401, 403, 404])("closes without reconnecting after HTTP %s", async (status) => {
+    vi.useFakeTimers();
+    const states: string[] = [];
+    const api = {
+      baseUrl: "/api",
+      getEvents: vi.fn(async () => { throw new ApiError("terminal", status); }),
+    } as unknown as ApiClient;
+    const stream = new TaskEventStream({
+      api,
+      taskId: "task_1",
+      runId: "run_1",
+      onEvents: () => undefined,
+      onState: (state) => states.push(state),
+      reconnectDelay: () => 1,
+    });
+
+    await stream.start();
+    await vi.runAllTimersAsync();
+
+    expect(api.getEvents).toHaveBeenCalledTimes(1);
+    expect(states.at(-1)).toBe("closed");
+    stream.stop();
+    vi.useRealTimers();
   });
 });

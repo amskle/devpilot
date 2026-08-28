@@ -5,7 +5,7 @@ import json
 import uuid
 from typing import Any
 
-from devpilot.domain.models import ModelProfile, RecoveryPoint
+from devpilot.domain.models import ModelProfile, RecoveryPoint, TaskStatus
 
 
 class TaskQueries:
@@ -30,6 +30,11 @@ class TaskQueries:
         result: list[dict[str, Any]] = []
         for projection in self.control.list_tasks():
             state = projection["state"]
+            if state["status"] == TaskStatus.WAITING_RISK_APPROVAL.value:
+                state = self.get_state(state["task_id"])
+                refreshed = self.control.get_task(state["task_id"])
+                if refreshed is not None:
+                    projection = refreshed
             if status and state["status"] != status:
                 continue
             try:

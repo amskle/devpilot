@@ -286,6 +286,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             {
                 "pending_replan_request": request.to_state_dict(),
                 "execution_budget": updated_budget.to_state_dict(),
+                "progress_window": {"entries": [], "no_progress_rounds": 0},
             }
         )
         merged["current_node"] = "prepare_replan"

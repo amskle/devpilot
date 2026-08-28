@@ -30,6 +30,7 @@ Phase 2/3 修正也进入前端契约：
 - Task Detail 展示 Phase 1 价格快照固化的实际 task model，避免模型选择与 UI 认知不一致。
 - Timeline 区分 `state_revision` 事件、非状态独立事件和 Checkpoint 确认状态。
 - 恢复产生新 `run_id` 时清空旧游标，从新 Run 的序号 0 重新补拉。
+- 网络错误和服务端暂时故障继续退避重连；401、403、404 属于终止状态，事件流直接关闭。
 
 ## API 契约
 

@@ -22,7 +22,10 @@ Skill / Git Worktree / Test Execution
 Artifact Store + Control Projection + Plan Store + Outbox + SQLite Checkpoint
 ```
 
+Phase 6 API 在该持久层之外增加 Redis 分布式短期状态：WebSocket 单次票据、跨 worker 限流以及 Outbox 的实时 Stream。SQLite Event Store 仍是审计真相，客户端始终可以通过持久游标恢复。
+
 Phase 1 的执行与一致性语义见 [phase1-execution-contract.md](phase1-execution-contract.md)，Plan 版本与重规划语义见 [phase2-plan-replanning.md](phase2-plan-replanning.md)。
+多 worker 控制面见 [phase6-distributed-control-plane.md](phase6-distributed-control-plane.md)。
 
 ## 活跃运行时模块边界
 

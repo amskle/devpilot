@@ -14,7 +14,7 @@ $env:DEVPILOT_MODEL = "model-name"
 python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失败测试"
 ```
 
-## Phase 4 API
+## Phase 6 API
 
 本机开发可使用默认 Token `devpilot-local` 启动，并在 `/docs` 中授权试调：
 
@@ -22,15 +22,19 @@ python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失
 python -m devpilot api --host 127.0.0.1 --port 8000
 ```
 
+开发模式使用默认管理员 Token 时会打印安全警告。该默认值不得用于共享环境。
+
 共享环境必须覆盖默认 Token：
 
 ```powershell
 $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
 $env:DEVPILOT_API_CORS_ORIGINS = "https://devpilot.example.com"
-python -m devpilot api --host 0.0.0.0 --port 8000
+$env:DEVPILOT_ENV = "production"
+$env:DEVPILOT_REDIS_URL = "redis://127.0.0.1:6379/0"
+python -m devpilot api --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-完整接口、安全和试调说明见 [Phase 4 控制面](phase4-fastapi-control-plane.md)。
+生产和多 worker 模式必须使用 Redis。当前本机安装位于 `A:\Redis` 时，可先确认 Windows 服务 `Redis` 已启动，再检查 `GET /api/ready`。所有 worker 还必须共享同一个 `DEVPILOT_DATA_DIR`。完整接口说明见 [Phase 4 控制面](phase4-fastapi-control-plane.md)，分布式部署语义见 [Phase 6 控制面](phase6-distributed-control-plane.md)。
 
 ## Legacy AgentTeams 模式
 

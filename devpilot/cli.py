@@ -27,10 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="devpilot")
     parser.add_argument("--data-dir", default=None)
     groups = parser.add_subparsers(dest="group", required=True)
-    api = groups.add_parser("api", help="run the Phase 4 FastAPI control plane")
+    api = groups.add_parser("api", help="run the Phase 6 FastAPI control plane")
     api.add_argument("--host", default="127.0.0.1")
     api.add_argument("--port", type=int, default=8000)
     api.add_argument("--reload", action="store_true")
+    api.add_argument("--workers", type=int, default=1)
     task = groups.add_parser("task")
     commands = task.add_subparsers(dest="command", required=True)
 
@@ -91,6 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.group == "api":
+        if args.workers < 1:
+            raise SystemExit("--workers must be positive")
+        if args.reload and args.workers != 1:
+            raise SystemExit("--reload and --workers cannot be used together")
+        if args.workers > 1 and not os.environ.get("DEVPILOT_REDIS_URL"):
+            raise SystemExit(
+                "DEVPILOT_REDIS_URL must be configured before using multiple API workers"
+            )
         if (
             args.host not in {"127.0.0.1", "localhost", "::1"}
             and not os.environ.get("DEVPILOT_API_TOKENS")
@@ -100,6 +109,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         if args.data_dir:
             os.environ["DEVPILOT_DATA_DIR"] = str(Path(args.data_dir).resolve())
+        os.environ["DEVPILOT_API_WORKERS"] = str(args.workers)
         import uvicorn
 
         uvicorn.run(
@@ -108,6 +118,7 @@ def main(argv: list[str] | None = None) -> None:
             host=args.host,
             port=args.port,
             reload=args.reload,
+            workers=args.workers,
         )
         return
     service = _service(args)

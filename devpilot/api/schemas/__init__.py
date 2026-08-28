@@ -6,6 +6,7 @@ from devpilot.api.schemas.common import (
     HealthResponse,
     MessageResponse,
     ProblemDetails,
+    ReadinessResponse,
 )
 from devpilot.api.schemas.controls import (
     ApprovalDecisionRequest,
@@ -41,6 +42,7 @@ __all__ = [
     "ModelProfileResponse",
     "PlanDocumentResponse",
     "ProblemDetails",
+    "ReadinessResponse",
     "RecoveryControlRequest",
     "RecoveryPoint",
     "TaskListResponse",
