@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> None:
         import uvicorn
 
         uvicorn.run(
-            "devpilot.api.app:create_app",
+            "devpilot.api.main:create_app",
             factory=True,
             host=args.host,
             port=args.port,

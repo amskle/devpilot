@@ -54,6 +54,8 @@ npm run build
 
 专项测试覆盖审批对象与 Revision 绑定、网络失败后的幂等 Key 复用、HTTP 409 冲突、Event Store 游标补拉、`event_id` 去重、独立事件/Checkpoint 事件语义，以及 ChangeRequest 废弃待审批 Patch 的二次确认。完整浏览器联调可通过 `python -m devpilot api` 启动 Phase 4 API。
 
+Phase 4 的路由按业务模块拆分，但测试始终通过应用工厂和公开 HTTP/WebSocket 契约执行，防止内部重构改变 OpenAPI、鉴权、状态码或前端路径。
+
 ## 6. Legacy 本地 Demo
 
 ```powershell

@@ -13,6 +13,40 @@ Phase 4 在 `devpilot/api/` 提供 REST 与只读 WebSocket API，将现有 `Tas
 
 普通消息只追加 `message_created` 非状态事件，不会从自然语言推断批准、取消或回滚。正式需求变化只能进入 `change-requests` API。
 
+## 代码分层
+
+Phase 4 API 按职责组织，入口文件不包含路由或业务规则：
+
+```text
+devpilot/api/
+├── main.py                         # 应用工厂、生命周期、中间件与路由装配
+├── app.py                          # 旧 Uvicorn 导入路径的兼容层
+├── core/
+│   ├── config.py                   # Token、CORS、票据有效期配置
+│   ├── dependencies.py             # FastAPI 鉴权与依赖注入声明
+│   ├── security.py                 # 票据与速率限制安全原语
+│   ├── errors.py                   # 统一 ProblemDetails 异常映射
+│   └── middleware.py               # Request ID 中间件
+├── schemas/
+│   ├── common.py                   # 通用响应与错误契约
+│   ├── tasks.py                    # Task 请求/响应 DTO
+│   ├── controls.py                 # 审批、恢复、消息与变更请求 DTO
+│   └── evidence.py                 # Plan、Diff、Event Ticket DTO
+├── services/
+│   └── control_plane.py            # 授权、分页、幂等和 TaskService 适配
+└── v1/
+    ├── router.py                   # 当前版本路由注册
+    └── endpoints/
+        ├── system.py
+        ├── tasks.py
+        ├── evidence.py
+        ├── conversation.py
+        ├── events.py
+        └── controls.py
+```
+
+`v1/` 是代码级版本边界；对外路径继续保持前端已经冻结的 `/api/...`，避免无意义地破坏 Phase 5。项目当前没有 SQLAlchemy ORM，因此没有创建空的 `models/` 或 `crud/` 层；持久化仍由既有 `SQLiteControlStore` 和 `ArtifactStore` 负责。领域流程继续集中在根级 `TaskService`，API Service 只处理传输层适配。
+
 ## 启动与直接测试
 
 安装锁定依赖后启动本地服务：
