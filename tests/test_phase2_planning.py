@@ -120,6 +120,7 @@ def test_replan_reuses_planning_agent_and_atomically_switches_version(tmp_path):
             budget=ExecutionBudget(max_iterations=1),
         )
         assert waiting["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+        assert waiting["progress_window"]["entries"]
         first_ref = waiting["active_plan_ref"]
 
         final = service.replan(
@@ -140,6 +141,7 @@ def test_replan_reuses_planning_agent_and_atomically_switches_version(tmp_path):
         assert final["active_plan_ref"]["plan_id"] == first_ref["plan_id"]
         assert final["active_plan_ref"]["version"] == 2
         assert final["execution_budget"]["plan_revisions_used"] == 1
+        assert final["progress_window"] == {"entries": [], "no_progress_rounds": 0}
         assert gateway.call_count("planning") == 2
 
         history = service.plan_history(final["task_id"])

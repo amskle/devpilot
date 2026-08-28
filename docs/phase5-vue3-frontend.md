@@ -9,6 +9,7 @@ Phase 5 在 `frontend/vue3/` 提供 Vue 3 + TypeScript 控制台：
 - Workspace Shell：左侧任务历史与可展开运行概览；移动端切换为可关闭侧栏；右上角提供持久化的白天/夜间模式。
 - Human-in-the-loop：绑定审批对象的批准/拒绝、取消、回滚、完整恢复和正式 ChangeRequest。
 - 可靠事件：先按 `(run_id, after_sequence)` 从 Event Store 补拉，再用短期票据建立 WebSocket；按 `event_id` 去重，序号缺口触发重新补拉。
+- 重连边界：网络错误和服务端暂时失败继续退避重连；认证失败或任务不可访问（HTTP 401/403/404）直接关闭事件流，等待用户重新认证或切换任务。
 - 响应式与无障碍基础：键盘可操作控件、语义化状态、移动端侧栏，以及内置字体资源的静态构建。
 
 当前代码库已包含 Phase 4 FastAPI 实现，前端按同一冻结契约完成网络适配；启动 `python -m devpilot api` 后即可端到端联调。前端不使用模拟数据作为生产回退。

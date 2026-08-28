@@ -16,7 +16,7 @@ python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失
 
 ## Phase 4 API
 
-本机开发可使用默认 Token `devpilot-local` 启动，并在 `/docs` 中授权试调：
+本机开发可使用默认 Token `devpilot-local` 启动，并在 `/docs` 中授权试调。启动日志会打印安全警告；该 Token 只允许用于本机开发：
 
 ```powershell
 python -m devpilot api --host 127.0.0.1 --port 8000
@@ -25,9 +25,16 @@ python -m devpilot api --host 127.0.0.1 --port 8000
 共享环境必须覆盖默认 Token：
 
 ```powershell
+$env:DEVPILOT_ENV = "production"
 $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
 $env:DEVPILOT_API_CORS_ORIGINS = "https://devpilot.example.com"
 python -m devpilot api --host 0.0.0.0 --port 8000
+```
+
+当前 API 必须以单进程、单 worker 运行。`EventTicketStore` 和 `RateLimiter` 是进程内状态；使用 `uvicorn --workers 2`（或更大值）会导致票据随机校验失败，并使限流按进程分裂。若绕过 DevPilot CLI 直接启动 Uvicorn，必须显式使用 `--workers 1`：
+
+```powershell
+uvicorn devpilot.api.main:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
 ```
 
 完整接口、安全和试调说明见 [Phase 4 控制面](phase4-fastapi-control-plane.md)。

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from devpilot.agents.model_gateway import ModelResponse, ScriptedFakeModelGateway
 from devpilot.api import create_app
 from devpilot.api.core.config import ApiSettings, Principal
+from devpilot.clock import FrozenClock
 from devpilot.domain.models import TaskStatus
 from devpilot.service import TaskService
 from devpilot.testing.repo import make_test_repo
@@ -190,6 +193,37 @@ def test_task_creation_projection_resource_authorization_and_message_boundary(tm
         service.close()
 
 
+def test_task_list_lazily_expires_pending_approval(tmp_path):
+    repo = make_test_repo(tmp_path / "repo")
+    clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=_change_request_gateway(),
+        clock=clock,
+        approval_ttl_seconds=1,
+    )
+    try:
+        waiting = service.create_task(repo, "fix helper")
+        service.control.bind_task_owner(waiting["task_id"], "alice")
+        clock.advance(seconds=2)
+
+        app = create_app(service=service, settings=_settings())
+        with TestClient(app) as client:
+            listed = client.get("/api/tasks", headers=ALICE_HEADERS)
+
+        assert listed.status_code == 200
+        [task] = listed.json()["items"]
+        assert task["status"] == TaskStatus.CANCELLED.value
+        assert task["pause_reason"] == "APPROVAL_EXPIRED"
+        assert task["state_revision"] > waiting["state_revision"]
+        assert any(
+            event["event_type"] == "approval_expired"
+            for event in service.event_history(waiting["task_id"])
+        )
+    finally:
+        service.close()
+
+
 def test_event_cursor_ticket_and_receive_only_websocket(tmp_path):
     repo = make_test_repo(tmp_path / "repo")
     service = TaskService(data_dir=tmp_path / "data", gateway=_no_action_gateway())
@@ -270,6 +304,17 @@ def test_change_request_requires_confirmation_and_links_replan_atomically(tmp_pa
             )
             assert accepted.status_code == 200, accepted.text
             assert accepted.json()["status"] == TaskStatus.COMPLETED_NO_CHANGES.value
+            assert accepted.json()["request"] == base["content"]
+            assert accepted.json()["context_delta_ref"] != waiting["context_delta_ref"]
+            assert accepted.json()["progress_window"] == {
+                "entries": [],
+                "no_progress_rounds": 0,
+            }
+
+            messages = client.get(
+                f"/api/tasks/{waiting['task_id']}/messages", headers=ALICE_HEADERS
+            ).json()
+            assert messages[0]["content"] == base["content"]
 
         changes = service.change_request_history(waiting["task_id"])
         replans = service.replan_history(waiting["task_id"])

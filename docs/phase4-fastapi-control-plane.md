@@ -62,9 +62,10 @@ python -m devpilot api --host 127.0.0.1 --port 8000
 - OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
 - 健康检查：`http://127.0.0.1:8000/api/health`
 
-未设置认证配置时，仅为本机开发提供默认管理员 Token `devpilot-local`。在 Swagger 右上角选择 **Authorize**，输入该 Token 即可直接试调。CLI 会拒绝在未配置自定义 Token 时监听非回环地址；任何共享或生产环境必须设置自己的 Token：
+`DEVPILOT_ENV=development` 且未设置认证配置时，仅为本机开发提供默认管理员 Token `devpilot-local`，启动日志会打印醒目警告。在 Swagger 右上角选择 **Authorize**，输入该 Token 即可直接试调。CLI 会拒绝在未配置自定义 Token 时监听非回环地址；当 `DEVPILOT_ENV` 不是 `development` 时，应用工厂也会拒绝在缺少 Token 的情况下启动。任何共享或生产环境必须设置自己的 Token：
 
 ```powershell
+$env:DEVPILOT_ENV = "production"
 $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
 python -m devpilot api
 ```
@@ -112,6 +113,8 @@ ChangeRequest 使用独立不可变记录，并与内部 ReplanRequest 建立来
 
 记录、失效事件和 Task projection 在同一个 SQLite 事务中提交。审批命令与 ChangeRequest 并发时，只有先通过 Revision 乐观锁的操作能够提交。
 
+`content` 的语义是**替换任务的当前需求**，不是追加一条聊天消息。接受变更时会把新需求写入不可变 Artifact，并原子更新 `context_delta_ref`；后续 Planning、Diagnosis、任务详情和消息视图都读取新需求。原始输入仍保留在旧的内容寻址 Artifact 中，ChangeRequest 表和审计事件保留变更来源与时间。
+
 ## 错误格式
 
 业务错误使用统一响应：
@@ -139,6 +142,7 @@ ChangeRequest 使用独立不可变记录，并与内部 ReplanRequest 建立来
 
 | 环境变量 | 说明 |
 |---|---|
+| `DEVPILOT_ENV` | 运行环境；默认 `development`，其他值均要求显式配置 API Token |
 | `DEVPILOT_API_TOKENS` | Token 到主体信息的 JSON 映射；生产必填 |
 | `DEVPILOT_API_CORS_ORIGINS` | 逗号分隔的允许 Origin；同源部署无需设置 |
 | `DEVPILOT_DATA_DIR` | Control DB、Checkpoint、Artifact 与 worktree 根目录 |
@@ -146,7 +150,7 @@ ChangeRequest 使用独立不可变记录，并与内部 ReplanRequest 建立来
 | `DEVPILOT_MODEL_BASE_URL` | 模型服务地址 |
 | `DEVPILOT_MODEL` | 默认模型；任务实际模型仍从价格快照读取并返回 |
 
-Phase 4 的速率限制和 WebSocket 票据是单节点进程内实现。多实例部署时应将二者替换为共享存储，但 Event Store 仍是补拉和审计的唯一可靠来源。
+Phase 4 的速率限制和 WebSocket 票据是单进程内实现，因此当前只能以 **单 worker** 运行；这既包括单机多进程，也包括多实例部署。DevPilot CLI 默认只启动一个 worker。直接运行 Uvicorn 时必须使用 `--workers 1`。需要横向扩展时，应先将票据与限流迁移到 Redis 等共享存储；Event Store 仍是补拉和审计的唯一可靠来源。
 
 ## 验证
 

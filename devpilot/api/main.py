@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -15,6 +16,9 @@ from devpilot.api.v1.router import router as v1_router
 from devpilot.service import TaskService
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_app(
     *,
     service: TaskService | None = None,
@@ -23,6 +27,11 @@ def create_app(
     """Create the API and wire infrastructure without embedding route logic."""
 
     api_settings = settings or ApiSettings.from_env()
+    if api_settings.uses_default_token:
+        logger.warning(
+            "SECURITY WARNING: using the public development administrator token "
+            "'devpilot-local'; configure DEVPILOT_API_TOKENS before sharing this API"
+        )
     task_service = service or TaskService()
     owns_service = service is None
     tickets = EventTicketStore(api_settings.ticket_ttl_seconds)

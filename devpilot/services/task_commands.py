@@ -178,6 +178,7 @@ class TaskCommands:
                 "diagnosis": None,
                 "verification": None,
                 "review": None,
+                "progress_window": {"entries": [], "no_progress_rounds": 0},
                 "current_node": "prepare_replan",
             }
         )
@@ -264,10 +265,14 @@ class TaskCommands:
             proposal = {**proposal, "status": "INVALIDATED"}
         approval = updated.get("pending_approval")
         invalidated_approval_id = approval.get("approval_id") if approval else None
+        request_ref = self.artifacts.put_text(
+            state["task_id"], state["run_id"], "task_request", normalized_content
+        )
         updated.update(
             {
                 "status": TaskStatus.RUNNING.value,
                 "pause_reason": None,
+                "context_delta_ref": request_ref.to_state_dict(),
                 "pending_approval": None,
                 "pending_replan_request": replan_request.to_state_dict(),
                 "execution_budget": budget.model_copy(
@@ -277,6 +282,7 @@ class TaskCommands:
                 "diagnosis": None,
                 "verification": None,
                 "review": None,
+                "progress_window": {"entries": [], "no_progress_rounds": 0},
                 "current_node": "prepare_replan",
             }
         )

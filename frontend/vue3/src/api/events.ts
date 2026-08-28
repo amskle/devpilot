@@ -114,8 +114,9 @@ export class TaskEventStream {
       this.socket.onclose = () => this.scheduleReconnect();
       this.socket.onerror = () => this.socket?.close();
     } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 401) this.scheduleReconnect();
-      else this.options.onState?.("closed");
+      const terminalHttpError = error instanceof ApiError && [401, 403, 404].includes(error.status);
+      if (terminalHttpError) this.options.onState?.("closed");
+      else this.scheduleReconnect();
     }
   }
 
