@@ -88,6 +88,14 @@ class RedisStreamConsumer:
     def stream_name(self, task_id: str, run_id: str) -> str:
         return f"{self.stream_prefix}:{task_id}:{run_id}"
 
+    def latest_id(self, task_id: str, run_id: str) -> str:
+        response = self.client.xrevrange(
+            self.stream_name(task_id, run_id), max="+", min="-", count=1
+        )
+        if not response:
+            return "0-0"
+        return self._text(response[0][0])
+
     @staticmethod
     def _text(value: Any) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)

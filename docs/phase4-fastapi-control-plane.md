@@ -7,7 +7,7 @@ Phase 4 在 `devpilot/api/` 提供 REST 与只读 WebSocket API，将现有 `Tas
 - 任务创建、列表、详情及任务级资源授权。
 - Plan、Diff、Trace、消息、恢复点与可靠事件查询。
 - 绑定 Revision 和具体对象的批准、拒绝、取消、回滚、恢复与 ChangeRequest。
-- Bearer 认证、任务所有权、持久化幂等负载绑定、进程内速率限制。
+- Bearer 认证、任务所有权、持久化幂等负载绑定和速率限制。
 - 单次、短期、任务绑定的 WebSocket 票据；实时连接只接收事件，不接受控制消息。
 - OpenAPI 3 文档、字段说明、示例、错误响应与 Swagger UI 直接试调。
 
@@ -60,7 +60,8 @@ python -m devpilot api --host 127.0.0.1 --port 8000
 - Swagger UI：`http://127.0.0.1:8000/docs`
 - ReDoc：`http://127.0.0.1:8000/redoc`
 - OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
-- 健康检查：`http://127.0.0.1:8000/api/health`
+- 存活检查：`http://127.0.0.1:8000/api/health`
+- 依赖就绪检查：`http://127.0.0.1:8000/api/ready`
 
 `DEVPILOT_ENV=development` 且未设置认证配置时，仅为本机开发提供默认管理员 Token `devpilot-local`，启动日志会打印醒目警告。在 Swagger 右上角选择 **Authorize**，输入该 Token 即可直接试调。CLI 会拒绝在未配置自定义 Token 时监听非回环地址；当 `DEVPILOT_ENV` 不是 `development` 时，应用工厂也会拒绝在缺少 Token 的情况下启动。任何共享或生产环境必须设置自己的 Token：
 
@@ -142,15 +143,16 @@ ChangeRequest 使用独立不可变记录，并与内部 ReplanRequest 建立来
 
 | 环境变量 | 说明 |
 |---|---|
-| `DEVPILOT_ENV` | 运行环境；默认 `development`，其他值均要求显式配置 API Token |
 | `DEVPILOT_API_TOKENS` | Token 到主体信息的 JSON 映射；生产必填 |
 | `DEVPILOT_API_CORS_ORIGINS` | 逗号分隔的允许 Origin；同源部署无需设置 |
+| `DEVPILOT_ENV` | 环境名称；非 `development` 时禁用默认 Token 并要求 Redis |
+| `DEVPILOT_REDIS_URL` | Phase 6 共享票据、限流和实时事件 Redis URL |
 | `DEVPILOT_DATA_DIR` | Control DB、Checkpoint、Artifact 与 worktree 根目录 |
 | `DEVPILOT_MODEL_API_KEY` | OpenAI-compatible 模型凭据 |
 | `DEVPILOT_MODEL_BASE_URL` | 模型服务地址 |
 | `DEVPILOT_MODEL` | 默认模型；任务实际模型仍从价格快照读取并返回 |
 
-Phase 4 的速率限制和 WebSocket 票据是单进程内实现，因此当前只能以 **单 worker** 运行；这既包括单机多进程，也包括多实例部署。DevPilot CLI 默认只启动一个 worker。直接运行 Uvicorn 时必须使用 `--workers 1`。需要横向扩展时，应先将票据与限流迁移到 Redis 等共享存储；Event Store 仍是补拉和审计的唯一可靠来源。
+Phase 4 的进程内实现只保留给单 worker 开发模式。Phase 6 配置 Redis 后会自动切换到跨 worker 的票据、限流、Outbox Relay 和实时 Stream；Event Store 仍是补拉和审计的唯一可靠来源，详见 [Phase 6 控制面](phase6-distributed-control-plane.md)。
 
 ## 验证
 

@@ -10,7 +10,11 @@ from typing import Any
 from fastapi.concurrency import run_in_threadpool
 
 from devpilot.api.core.config import Principal
-from devpilot.api.core.security import EventTicketStore, RateLimiter
+from devpilot.api.core.security import (
+    EventTicketStore,
+    RateLimiter,
+    SharedStateUnavailableError,
+)
 from devpilot.api.schemas import (
     ApprovalDecisionRequest,
     ChangeRequestBody,
@@ -20,6 +24,7 @@ from devpilot.api.schemas import (
     RecoveryControlRequest,
 )
 from devpilot.domain.models import TaskStatus
+from devpilot.events import RedisStreamConsumer
 from devpilot.service import TaskService
 
 
@@ -31,10 +36,12 @@ class ControlPlaneService:
         tasks: TaskService,
         tickets: EventTicketStore,
         limiter: RateLimiter,
+        live_events: RedisStreamConsumer | None = None,
     ) -> None:
         self.tasks = tasks
         self.tickets = tickets
         self.limiter = limiter
+        self.live_events = live_events
 
     def authorize(self, principal: Principal, task_id: str) -> None:
         if self.tasks.control.get_task(task_id) is None:
@@ -44,8 +51,18 @@ class ControlPlaneService:
             return
         raise KeyError(task_id)
 
-    def consume_ticket(self, ticket: str, task_id: str) -> Principal | None:
-        return self.tickets.consume(ticket, task_id)
+    async def consume_ticket(self, ticket: str, task_id: str) -> Principal | None:
+        return await run_in_threadpool(self.tickets.consume, ticket, task_id)
+
+    async def _check_rate_limit(
+        self, subject: str, bucket: str, *, limit: int
+    ) -> None:
+        await run_in_threadpool(
+            self.limiter.check,
+            subject,
+            bucket,
+            limit=limit,
+        )
 
     @staticmethod
     def _encode_cursor(offset: int) -> str:
@@ -81,7 +98,7 @@ class ControlPlaneService:
     async def create_task(
         self, body: CreateTaskRequest, principal: Principal
     ) -> dict[str, Any]:
-        self.limiter.check(principal.subject, "task-create", limit=10)
+        await self._check_rate_limit(principal.subject, "task-create", limit=10)
         state = await run_in_threadpool(
             self.tasks.create_task,
             Path(body.repo),
@@ -138,7 +155,9 @@ class ControlPlaneService:
         self.authorize(principal, task_id)
         return await run_in_threadpool(self.tasks.trace, task_id, run_id)
 
-    async def messages(self, task_id: str, principal: Principal) -> list[dict[str, Any]]:
+    async def messages(
+        self, task_id: str, principal: Principal
+    ) -> list[dict[str, Any]]:
         self.authorize(principal, task_id)
         return await run_in_threadpool(self.tasks.messages, task_id)
 
@@ -153,7 +172,7 @@ class ControlPlaneService:
         self._bind_idempotency(
             task_id, "messages", idempotency_key, body.model_dump(mode="json")
         )
-        self.limiter.check(principal.subject, "message-create", limit=60)
+        await self._check_rate_limit(principal.subject, "message-create", limit=60)
         return await run_in_threadpool(
             self.tasks.add_message,
             task_id,
@@ -191,10 +210,52 @@ class ControlPlaneService:
             limit=limit,
         )
 
-    def issue_ticket(self, task_id: str, principal: Principal) -> dict[str, str]:
+    async def issue_ticket(
+        self, task_id: str, principal: Principal
+    ) -> dict[str, str]:
         self.authorize(principal, task_id)
-        ticket, expires_at = self.tickets.issue(task_id, principal)
+        ticket, expires_at = await run_in_threadpool(
+            self.tickets.issue, task_id, principal
+        )
         return {"ticket": ticket, "expires_at": expires_at}
+
+    async def live_cursor(self, task_id: str, run_id: str) -> str | None:
+        if self.live_events is None:
+            return None
+        try:
+            return await run_in_threadpool(
+                self.live_events.latest_id, task_id, run_id
+            )
+        except Exception as exc:
+            raise SharedStateUnavailableError(
+                "Redis live event transport is unavailable"
+            ) from exc
+
+    async def live_event_batch(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        after_stream_id: str,
+        limit: int,
+        block_milliseconds: int,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        if self.live_events is None:
+            return after_stream_id, []
+        try:
+            cursor, events = await run_in_threadpool(
+                self.live_events.read,
+                task_id,
+                run_id,
+                after_stream_id=after_stream_id,
+                count=limit,
+                block_milliseconds=block_milliseconds,
+            )
+        except Exception as exc:
+            raise SharedStateUnavailableError(
+                "Redis live event transport is unavailable"
+            ) from exc
+        return cursor, [event.to_state_dict() for event in events]
 
     async def recovery_points(
         self, task_id: str, principal: Principal
@@ -215,7 +276,7 @@ class ControlPlaneService:
         self._bind_idempotency(
             task_id, operation, idempotency_key, body.model_dump(mode="json")
         )
-        self.limiter.check(principal.subject, "control", limit=30)
+        await self._check_rate_limit(principal.subject, "control", limit=30)
         await run_in_threadpool(
             self.tasks.decide_approval,
             task_id,
@@ -240,7 +301,7 @@ class ControlPlaneService:
         self._bind_idempotency(
             task_id, "cancel", idempotency_key, body.model_dump(mode="json")
         )
-        self.limiter.check(principal.subject, "control", limit=30)
+        await self._check_rate_limit(principal.subject, "control", limit=30)
         await run_in_threadpool(
             self.tasks.cancel,
             task_id,
@@ -261,7 +322,7 @@ class ControlPlaneService:
         self._bind_idempotency(
             task_id, operation, idempotency_key, body.model_dump(mode="json")
         )
-        self.limiter.check(principal.subject, "control", limit=30)
+        await self._check_rate_limit(principal.subject, "control", limit=30)
         if operation == "rollback":
             await run_in_threadpool(
                 self.tasks.rollback,
@@ -291,7 +352,7 @@ class ControlPlaneService:
         self._bind_idempotency(
             task_id, "change-requests", idempotency_key, body.model_dump(mode="json")
         )
-        self.limiter.check(principal.subject, "control", limit=30)
+        await self._check_rate_limit(principal.subject, "control", limit=30)
         await run_in_threadpool(
             self.tasks.change_request,
             task_id,

@@ -91,5 +91,6 @@ describe("TaskEventStream", () => {
     expect(states.at(-1)).toBe("closed");
     expect(reconnectDelay).not.toHaveBeenCalled();
     expect(api.createEventTicket).not.toHaveBeenCalled();
+    stream.stop();
   });
 });

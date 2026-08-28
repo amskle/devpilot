@@ -106,7 +106,7 @@ def test_openapi_documents_auth_examples_and_control_contract(tmp_path):
     try:
         app = create_app(service=service, settings=_settings())
         schema = app.openapi()
-        assert schema["info"]["version"] == "0.4.0"
+        assert schema["info"]["version"] == "0.6.0"
         assert "DevPilotBearer" in schema["components"]["securitySchemes"]
         create_schema = schema["components"]["schemas"]["CreateTaskRequest"]
         assert create_schema["properties"]["repo"]["examples"]
@@ -310,7 +310,6 @@ def test_change_request_requires_confirmation_and_links_replan_atomically(tmp_pa
                 "entries": [],
                 "no_progress_rounds": 0,
             }
-
             messages = client.get(
                 f"/api/tasks/{waiting['task_id']}/messages", headers=ALICE_HEADERS
             ).json()
@@ -324,5 +323,31 @@ def test_change_request_requires_confirmation_and_links_replan_atomically(tmp_pa
         assert "change_request_accepted" in event_types
         assert "approval_invalidated" in event_types
         assert "patch_invalidated" in event_types
+    finally:
+        service.close()
+
+
+def test_task_list_lazily_expires_pending_approval(tmp_path):
+    repo = make_test_repo(tmp_path / "repo")
+    clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=_change_request_gateway(),
+        clock=clock,
+        approval_ttl_seconds=1,
+    )
+    try:
+        waiting = service.create_task(repo, "fix helper")
+        service.control.bind_task_owner(waiting["task_id"], "alice")
+        clock.advance(seconds=2)
+        app = create_app(service=service, settings=_settings())
+        with TestClient(app) as client:
+            listed = client.get("/api/tasks", headers=ALICE_HEADERS)
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["status"] == TaskStatus.CANCELLED.value
+        assert any(
+            event["event_type"] == "approval_expired"
+            for event in service.event_history(waiting["task_id"])
+        )
     finally:
         service.close()

@@ -8,6 +8,8 @@ python -m pytest skills tests -q
 
 当前测试覆盖：8 个 Skill、plain GraphState、Pydantic 边界、脚本化 Fake Gateway、Tool 权限和唯一重试、SQLite 对账、Git 隔离、诊断前基线测试、Java 字段类型与源码证据、审批中断/过期、Checkpoint/Restore、Progress 双指纹、费用与活跃时间预算、控制命令幂等、版本化 Plan、自动/人工 Replanning、Plan 修订预算、可靠事件、Transactional Outbox、Redis Streams/WebSocket 基础、异常规范化和旧入口兼容。测试数量以 CI 实际结果为准。
 
+Phase 6 另覆盖跨 worker 单次票据、共享限流、Redis 故障 readiness、生产配置校验和前端终止重连状态。
+
 ## 2. Phase 1 CLI
 
 ```powershell
@@ -40,6 +42,12 @@ python -m pytest tests/test_phase2_planning.py -q
 
 ```powershell
 python -m pytest tests/test_phase3_events.py -q
+```
+
+分布式控制面专项测试：
+
+```powershell
+python -m pytest tests/test_phase6_distributed_api.py -q
 ```
 
 ## 5. Phase 5 Vue3 前端

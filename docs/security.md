@@ -15,5 +15,7 @@
 ## 凭证与执行隔离
 
 - API Key 只从 `DEVPILOT_MODEL_API_KEY` 读取，不写入 State、Event 或 Artifact。
+- 默认管理员 Token `devpilot-local` 仅在 development 可用；非开发环境缺少显式 API Token 时启动失败。
+- 生产 WebSocket 票据和限流状态存入 Redis。票据仅以哈希 Key 保存并原子消费；Redis 不可用时 fail-closed。
 - Phase 1 通过 workspace 路径边界和 Tool 白名单隔离；容器沙箱是后续增强项。
 - 硬编码密钥由 SecurityScan 检测并仅报告，不自动修复。

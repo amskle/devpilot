@@ -14,5 +14,6 @@
 | [ADR-0008](0008-checkpoint-projection-consistency.md) | Accepted | Checkpoint 为恢复真相，Task/Event 投影采用事件优先与显式对账 |
 | [ADR-0009](0009-cli-approval-expiration.md) | Accepted | CLI-only 阶段在控制入口惰性判定审批过期 |
 | [ADR-0010](0010-transactional-outbox-delivery.md) | Accepted | Event Store 与 Outbox 原子写入，Redis Streams 采用至少一次投递 |
+| [ADR-0011](0011-redis-distributed-api-state.md) | Accepted | Redis 承载多 worker 的票据、限流和实时事件状态 |
 
 每份 ADR 至少包含背景、决策、后果和验收条件。

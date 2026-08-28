@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from devpilot.api.core.security import SharedStateUnavailableError
 from devpilot.api.schemas import ProblemDetails
 from devpilot.errors import BudgetExceededError, PolicyDeniedError, StateConflictError
 
@@ -76,3 +77,15 @@ def install_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ValueError)
     async def value_handler(request: Request, exc: ValueError) -> JSONResponse:
         return _problem(request, 422, "DOMAIN_VALIDATION_FAILED", str(exc))
+
+    @app.exception_handler(SharedStateUnavailableError)
+    async def shared_state_handler(
+        request: Request, _: SharedStateUnavailableError
+    ) -> JSONResponse:
+        return _problem(
+            request,
+            503,
+            "SHARED_STATE_UNAVAILABLE",
+            "distributed security state is temporarily unavailable",
+            headers={"Retry-After": "1"},
+        )

@@ -27,6 +27,12 @@ class HealthResponse(ApiModel):
     service: Literal["devpilot-api"] = "devpilot-api"
 
 
+class ReadinessResponse(ApiModel):
+    status: Literal["ready", "not_ready"]
+    service: Literal["devpilot-api"] = "devpilot-api"
+    dependencies: dict[str, Literal["ok", "disabled", "unavailable"]]
+
+
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ProblemDetails, "description": "Missing or invalid bearer token"},
     403: {"model": ProblemDetails, "description": "Safety policy denied the operation"},
@@ -34,4 +40,5 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     409: {"model": ProblemDetails, "description": "State revision or lifecycle conflict"},
     422: {"model": ProblemDetails, "description": "Request or domain validation failed"},
     429: {"model": ProblemDetails, "description": "Rate limit exceeded"},
+    503: {"model": ProblemDetails, "description": "Shared state dependency unavailable"},
 }
