@@ -5,9 +5,13 @@
 ```text
 CLI / Python API
       ↓
-TaskService（控制命令、惰性超时、乐观锁）
+TaskService（稳定门面）
+      ├── TaskRuntimeCore（依赖装配、模型选择、Checkpoint）
+      ├── TaskCommands（审批、取消、重规划、变更、恢复执行）
+      ├── TaskRecoveryCommands（回滚、恢复、对账）
+      └── TaskQueries（任务视图、消息、历史与 Trace）
       ↓
-LangGraph（GraphState、Checkpoint、Interrupt、条件路由）
+LangGraph Nodes + Topology（节点实现、条件路由分离）
       ↓
 AgentRunner（一次节点授权的有限模型/工具循环）
       ↓
@@ -15,10 +19,19 @@ ToolExecutor（白名单、Schema、路径、重试、预算）
       ↓
 Skill / Git Worktree / Test Execution
       ↓
-Artifact Store + Event/Task Projection + SQLite Checkpoint
+Artifact Store + Control Projection + Plan Store + Outbox + SQLite Checkpoint
 ```
 
 Phase 1 的执行与一致性语义见 [phase1-execution-contract.md](phase1-execution-contract.md)，Plan 版本与重规划语义见 [phase2-plan-replanning.md](phase2-plan-replanning.md)。
+
+## 活跃运行时模块边界
+
+- `devpilot/service.py` 只保留公共 `TaskService` 门面；CLI、API 和兼容层无需感知内部拆分。
+- `devpilot/services/task_runtime.py` 负责生命周期和 LangGraph 调用，用户控制命令、恢复命令、查询投影分别位于对应的 `task_*` 模块。
+- `devpilot/services/storage.py` 负责任务投影、事件日志与 checkpoint 一致性；制品、Plan 生命周期、Outbox 和幂等记录由独立存储能力模块提供，并组合进 `SQLiteControlStore`。
+- `devpilot/orchestration/graph.py` 实现节点行为，`devpilot/orchestration/topology.py` 集中维护节点连接与条件路由。
+
+这些边界是内部结构约束，不改变 `devpilot.service.TaskService` 和 `devpilot.services.storage` 的兼容导入路径。
 
 ## Legacy 架构图
 

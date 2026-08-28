@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from devpilot.agents.definitions import AGENT_SPECS, OUTPUT_MODELS
@@ -35,6 +34,7 @@ from devpilot.services.storage import ArtifactStore, SQLiteControlStore
 from devpilot.services.pricing import PricingCatalog
 from devpilot.tools.executor import ToolExecutor
 from devpilot.workspace import WorkspaceManager
+from devpilot.orchestration.topology import compile_graph
 
 
 @dataclass
@@ -98,8 +98,6 @@ def _raise_agent_error(invocation: Any) -> None:
 
 
 def build_graph(runtime: GraphRuntime, checkpointer: Any):
-    builder = StateGraph(GraphState)
-
     def workspace_setup(state: GraphState) -> GraphState:
         if state["workspace_ref"] is not None:
             return _merge_transition(
@@ -855,81 +853,23 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             },
         )
 
-    builder.add_node("workspace_setup", workspace_setup)
-    builder.add_node("baseline_context", baseline_context)
-    builder.add_node("baseline_verification", baseline_verification)
-    builder.add_node("prepare_replan", prepare_replan)
-    builder.add_node("planning", planning)
-    builder.add_node("diagnosis", diagnosis)
-    builder.add_node("patch_generation", patch_generation)
-    builder.add_node("risk_assessment", risk_assessment)
-    builder.add_node("approval_gate", approval_gate)
-    builder.add_node("apply_patch", apply_patch)
-    builder.add_node("run_verification", run_verification)
-    builder.add_node("parse_verification", parse_verification)
-    builder.add_node("evaluate_progress", evaluate_progress)
-    builder.add_node("failure_router", failure_router)
-    builder.add_node("review", review)
-
-    builder.add_edge(START, "workspace_setup")
-    builder.add_edge("workspace_setup", "baseline_context")
-    builder.add_edge("baseline_context", "baseline_verification")
-    builder.add_edge("baseline_verification", "planning")
-    builder.add_edge("planning", "diagnosis")
-    builder.add_conditional_edges(
-        "diagnosis",
-        lambda s: (
-            "end"
-            if s["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
-            else "plan_invalid"
-            if (s["diagnosis"] or {}).get("outcome") == "PLAN_INVALID"
-            else "failed_no_action"
-            if s["latest_failure"] is not None
-            and (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED"
-            else "review"
-            if (s["diagnosis"] or {}).get("outcome") == "NO_ACTION_REQUIRED"
-            else "patch_generation"
-        ),
+    return compile_graph(
         {
-            "end": END,
-            "plan_invalid": "failure_router",
-            "failed_no_action": "failure_router",
-            "review": "review",
-            "patch_generation": "patch_generation",
+            "workspace_setup": workspace_setup,
+            "baseline_context": baseline_context,
+            "baseline_verification": baseline_verification,
+            "prepare_replan": prepare_replan,
+            "planning": planning,
+            "diagnosis": diagnosis,
+            "patch_generation": patch_generation,
+            "risk_assessment": risk_assessment,
+            "approval_gate": approval_gate,
+            "apply_patch": apply_patch,
+            "run_verification": run_verification,
+            "parse_verification": parse_verification,
+            "evaluate_progress": evaluate_progress,
+            "failure_router": failure_router,
+            "review": review,
         },
+        checkpointer,
     )
-    builder.add_edge("patch_generation", "risk_assessment")
-    builder.add_conditional_edges(
-        "risk_assessment",
-        lambda s: "end" if s["status"] == TaskStatus.POLICY_REJECTED.value else (
-            "approval" if s["status"] == TaskStatus.WAITING_RISK_APPROVAL.value else "apply"
-        ),
-        {"end": END, "approval": "approval_gate", "apply": "apply_patch"},
-    )
-    builder.add_conditional_edges(
-        "approval_gate",
-        lambda s: "apply" if s["status"] == TaskStatus.RUNNING.value else "end",
-        {"apply": "apply_patch", "end": END},
-    )
-    builder.add_edge("apply_patch", "run_verification")
-    builder.add_edge("run_verification", "parse_verification")
-    builder.add_conditional_edges(
-        "parse_verification",
-        lambda s: "review" if s["latest_failure"] is None else "evaluate",
-        {"review": "review", "evaluate": "evaluate_progress"},
-    )
-    builder.add_edge("evaluate_progress", "failure_router")
-    builder.add_conditional_edges(
-        "failure_router",
-        lambda s: (
-            "end"
-            if s["status"] != TaskStatus.RUNNING.value
-            else "prepare_replan"
-            if (s["latest_failure"] or {}).get("recovery_action") == "REPLAN"
-            else "diagnosis"
-        ),
-        {"prepare_replan": "prepare_replan", "diagnosis": "diagnosis", "end": END},
-    )
-    builder.add_edge("prepare_replan", "planning")
-    builder.add_edge("review", END)
-    return builder.compile(checkpointer=checkpointer)

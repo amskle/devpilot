@@ -20,7 +20,6 @@ Phase 4 API 按职责组织，入口文件不包含路由或业务规则：
 ```text
 devpilot/api/
 ├── main.py                         # 应用工厂、生命周期、中间件与路由装配
-├── app.py                          # 旧 Uvicorn 导入路径的兼容层
 ├── core/
 │   ├── config.py                   # Token、CORS、票据有效期配置
 │   ├── dependencies.py             # FastAPI 鉴权与依赖注入声明

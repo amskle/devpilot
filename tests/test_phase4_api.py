@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from devpilot.agents.model_gateway import ModelResponse, ScriptedFakeModelGateway
 from devpilot.api import create_app
-from devpilot.api.security import ApiSettings, Principal
+from devpilot.api.core.config import ApiSettings, Principal
 from devpilot.domain.models import TaskStatus
 from devpilot.service import TaskService
 from devpilot.testing.repo import make_test_repo
