@@ -43,7 +43,14 @@ def run(inputs: dict) -> dict:
     if level != "Low":
         reasons.append(f"风险评分 {score}/100，需人工确认或审批")
 
-    return {"status": "ok", "data": {"level": level, "score": min(score, 100), "reasons": reasons}}
+    return {
+        "status": "ok",
+        "data": {
+            "level": level,
+            "score": max(0, min(score, 100)),
+            "reasons": reasons,
+        },
+    }
 
 
 if __name__ == "__main__":

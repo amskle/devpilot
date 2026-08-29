@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import uuid
 from datetime import datetime, timedelta
@@ -22,52 +23,105 @@ class WorkspaceManager:
     def _git(repo: Path, *args: str, input_text: str | None = None, check: bool = True) -> str:
         proc = subprocess.run(
             ["git", "-C", str(repo), *args],
-            input=input_text,
+            input=input_text.encode("utf-8") if input_text is not None else None,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             check=False,
         )
+        stdout = proc.stdout.decode("utf-8", errors="replace")
+        stderr = proc.stderr.decode("utf-8", errors="replace")
         if check and proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"git {' '.join(args)} failed")
-        return proc.stdout.strip()
+            raise RuntimeError(
+                stderr.strip()
+                or stdout.strip()
+                or f"git {' '.join(args)} failed"
+            )
+        return stdout.strip()
 
     def validate_source(self, source_repo: Path, revision: str = "HEAD") -> str:
         source_repo = source_repo.resolve()
-        if self._git(source_repo, "rev-parse", "--is-bare-repository") == "true":
-            git_directory = Path(
-                self._git(source_repo, "rev-parse", "--absolute-git-dir")
-            ).resolve()
-            if git_directory != source_repo:
-                raise ValueError(
-                    f"bare repository path must be Git root: {git_directory}"
+        try:
+            is_bare = self._git(
+                source_repo, "rev-parse", "--is-bare-repository"
+            )
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"invalid source repository: {exc}") from exc
+        try:
+            if is_bare == "true":
+                git_directory = Path(
+                    self._git(source_repo, "rev-parse", "--absolute-git-dir")
+                ).resolve()
+                if git_directory != source_repo:
+                    raise ValueError(
+                        f"bare repository path must be Git root: {git_directory}"
+                    )
+                return self._git(
+                    source_repo, "rev-parse", f"{revision}^{{commit}}"
                 )
+            top = Path(
+                self._git(source_repo, "rev-parse", "--show-toplevel")
+            ).resolve()
+            if top != source_repo:
+                raise ValueError(f"repository path must be Git root: {top}")
+            dirty = self._git(
+                source_repo,
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            )
+            if dirty:
+                raise ValueError(f"source repository is dirty:\n{dirty}")
             return self._git(source_repo, "rev-parse", f"{revision}^{{commit}}")
-        top = Path(self._git(source_repo, "rev-parse", "--show-toplevel")).resolve()
-        if top != source_repo:
-            raise ValueError(f"repository path must be Git root: {top}")
-        dirty = self._git(source_repo, "status", "--porcelain", "--untracked-files=all")
-        if dirty:
-            raise ValueError(f"source repository is dirty:\n{dirty}")
-        return self._git(source_repo, "rev-parse", revision)
+        except RuntimeError as exc:
+            raise ValueError(f"invalid repository revision: {exc}") from exc
 
-    def create(self, source_repo: Path, task_id: str, run_id: str, revision: str = "HEAD") -> WorkspaceRef:
+    def create(
+        self,
+        source_repo: Path,
+        task_id: str,
+        run_id: str,
+        revision: str = "HEAD",
+        *,
+        lease_ttl_seconds: int = 1800,
+    ) -> WorkspaceRef:
+        if lease_ttl_seconds < 1:
+            raise ValueError("lease_ttl_seconds must be positive")
         source_repo = source_repo.resolve()
         baseline = self.validate_source(source_repo, revision)
         task_root = self.root / task_id / run_id
         bare = task_root / "repository.git"
         worktree = task_root / "worktree"
         task_root.mkdir(parents=True, exist_ok=False)
-        proc = subprocess.run(
-            ["git", "clone", "--bare", "--no-local", str(source_repo), str(bare)],
-            capture_output=True, text=True, check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "failed to clone task repository")
-        self._git(bare, "worktree", "add", "--detach", str(worktree), baseline)
-        self._git(worktree, "config", "user.name", "DevPilot")
-        self._git(worktree, "config", "user.email", "devpilot@local")
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--bare",
+                    "--no-local",
+                    str(source_repo),
+                    str(bare),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    proc.stderr.strip() or "failed to clone task repository"
+                )
+            self._git(
+                bare,
+                "worktree",
+                "add",
+                "--detach",
+                str(worktree),
+                baseline,
+            )
+            self._git(worktree, "config", "user.name", "DevPilot")
+            self._git(worktree, "config", "user.email", "devpilot@local")
+        except Exception:
+            shutil.rmtree(task_root, ignore_errors=True)
+            raise
         workspace_id = f"ws_{uuid.uuid4().hex[:16]}"
         return WorkspaceRef(
             workspace_id=workspace_id,
@@ -76,7 +130,35 @@ class WorkspaceManager:
             baseline_revision=baseline,
             current_revision=baseline,
             lease_owner=run_id,
-            lease_expires_at=(self.clock.now() + timedelta(minutes=30)).isoformat(),
+            lease_expires_at=(
+                self.clock.now() + timedelta(seconds=lease_ttl_seconds)
+            ).isoformat(),
+        )
+
+    def renew_lease(
+        self,
+        workspace: WorkspaceRef,
+        *,
+        expected_owner: str,
+        new_owner: str | None = None,
+        lease_ttl_seconds: int = 1800,
+    ) -> WorkspaceRef:
+        """Renew an authorized task lease, including after a human pause."""
+
+        if lease_ttl_seconds < 1:
+            raise ValueError("lease_ttl_seconds must be positive")
+        if workspace.lease_owner != expected_owner:
+            raise StateConflictError(
+                "workspace lease owner changed: "
+                f"expected {expected_owner}, actual {workspace.lease_owner}"
+            )
+        return workspace.model_copy(
+            update={
+                "lease_owner": new_owner or expected_owner,
+                "lease_expires_at": (
+                    self.clock.now() + timedelta(seconds=lease_ttl_seconds)
+                ).isoformat(),
+            }
         )
 
     @staticmethod

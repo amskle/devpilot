@@ -124,7 +124,8 @@ def test_non_development_environment_requires_explicit_credentials(
         ApiSettings.from_env()
 
     monkeypatch.setenv(
-        "DEVPILOT_API_TOKENS", '{"token":{"subject":"alice","admin":true}}'
+        "DEVPILOT_API_TOKENS",
+        '{"0123456789abcdef0123456789abcdef":{"subject":"alice","admin":true}}',
     )
     monkeypatch.delenv("DEVPILOT_REDIS_URL", raising=False)
     with pytest.raises(ValueError, match="DEVPILOT_REDIS_URL"):

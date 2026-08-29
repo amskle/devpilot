@@ -12,18 +12,21 @@ class BudgetService:
     """Mutates a plain budget dictionary after validating a reserved operation."""
 
     def reserve_llm(self, raw: dict[str, Any], estimated_tokens: int = 0, estimated_cost: str = "0") -> dict[str, Any]:
+        estimated_cost_value = Decimal(estimated_cost)
+        if estimated_tokens < 0 or not estimated_cost_value.is_finite() or estimated_cost_value < 0:
+            raise ValueError("estimated token and cost reservations must be non-negative")
         budget = ExecutionBudget.from_state_dict(raw)
         self._check_active_time(budget)
         if budget.llm_calls_used + 1 > budget.max_llm_calls:
             raise BudgetExceededError("LLM call budget exhausted")
         if budget.prompt_tokens_used + budget.completion_tokens_used + estimated_tokens > budget.max_total_tokens:
             raise BudgetExceededError("token budget exhausted")
-        if budget.max_cost is not None and Decimal(budget.cost_used) + Decimal(estimated_cost) > Decimal(budget.max_cost):
+        if budget.max_cost is not None and Decimal(budget.cost_used) + estimated_cost_value > Decimal(budget.max_cost):
             raise BudgetExceededError("cost budget exhausted")
         update = budget.model_copy(
             update={
                 "llm_calls_used": budget.llm_calls_used + 1,
-                "cost_used": self._format_cost(Decimal(budget.cost_used) + Decimal(estimated_cost)),
+                "cost_used": self._format_cost(Decimal(budget.cost_used) + estimated_cost_value),
             }
         )
         return update.to_state_dict()
@@ -37,9 +40,20 @@ class BudgetService:
         reserved_cost: str = "0",
         actual_cost: str = "0",
     ) -> dict[str, Any]:
+        reserved_cost_value = Decimal(reserved_cost)
+        actual_cost_value = Decimal(actual_cost)
+        if (
+            prompt_tokens < 0
+            or completion_tokens < 0
+            or not reserved_cost_value.is_finite()
+            or not actual_cost_value.is_finite()
+            or reserved_cost_value < 0
+            or actual_cost_value < 0
+        ):
+            raise ValueError("settled token and cost usage must be non-negative")
         budget = ExecutionBudget.from_state_dict(raw)
         total = budget.prompt_tokens_used + budget.completion_tokens_used + prompt_tokens + completion_tokens
-        settled_cost = Decimal(budget.cost_used) - Decimal(reserved_cost) + Decimal(actual_cost)
+        settled_cost = Decimal(budget.cost_used) - reserved_cost_value + actual_cost_value
         if settled_cost < 0:
             raise ValueError("reserved cost exceeds current cost reservation")
         update = budget.model_copy(

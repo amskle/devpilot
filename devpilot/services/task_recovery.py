@@ -45,8 +45,9 @@ class TaskRecoveryCommands:
         budget = ExecutionBudget.from_state_dict(state["execution_budget"])
         if budget.rollbacks_used >= budget.max_rollbacks:
             raise ValueError("rollback budget exhausted")
-        workspace_ref = WorkspaceRef.from_state_dict(state["workspace_ref"] or {})
-        self.workspace_manager.validate_lease(workspace_ref, state["run_id"])
+        workspace_ref = WorkspaceRef.from_state_dict(
+            self._renew_workspace_lease(state)
+        )
         workspace = self.workspace_manager.rollback(
             workspace_ref, recovery.repository_snapshot_id
         )
@@ -114,8 +115,9 @@ class TaskRecoveryCommands:
         if recovery.recovery_point_id != recovery_point_id:
             raise ValueError("recovery point does not match active recovery point")
         request = self._request_from_state(old)
-        workspace_ref = WorkspaceRef.from_state_dict(old["workspace_ref"] or {})
-        self.workspace_manager.validate_lease(workspace_ref, old["run_id"])
+        workspace_ref = WorkspaceRef.from_state_dict(
+            self._renew_workspace_lease(old)
+        )
         workspace = self.workspace_manager.rollback(
             workspace_ref, recovery.repository_snapshot_id
         )
@@ -125,8 +127,11 @@ class TaskRecoveryCommands:
             {
                 "run_id": new_run_id,
                 "parent_run_id": old["run_id"],
-                "workspace_ref": workspace.model_copy(
-                    update={"lease_owner": new_run_id}
+                "workspace_ref": self.workspace_manager.renew_lease(
+                    workspace,
+                    expected_owner=old["run_id"],
+                    new_owner=new_run_id,
+                    lease_ttl_seconds=self._lease_ttl_seconds(old),
                 ).to_state_dict(),
                 "status": TaskStatus.RUNNING.value,
                 "pause_reason": None,

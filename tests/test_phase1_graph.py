@@ -74,6 +74,31 @@ def test_graph_interrupts_and_resumes_bound_approval(tmp_path):
         service.close()
 
 
+def test_approval_lease_remains_valid_for_the_full_approval_window(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=approval_scenario(),
+        clock=clock,
+    )
+    try:
+        waiting = service.create_task(repo, "fix helper")
+        clock.advance(seconds=31 * 60)
+        pending = waiting["pending_approval"]
+        final = service.decide_approval(
+            waiting["task_id"],
+            decision="APPROVE",
+            approval_id=pending["approval_id"],
+            patch_hash=pending["patch_hash"],
+            base_revision=pending["base_revision"],
+            expected_revision=waiting["state_revision"],
+        )
+        assert final["status"] == TaskStatus.COMPLETED.value
+    finally:
+        service.close()
+
+
 def test_cli_only_approval_timeout_is_lazy(tmp_path):
     repo = make_repo(tmp_path / "repo")
     clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -610,16 +635,21 @@ def test_node_exception_is_normalized_and_checkpointed(tmp_path):
     repo = make_repo(tmp_path / "repo")
     service = TaskService(
         data_dir=tmp_path / "data",
-        gateway=ScriptedFakeModelGateway({"planning": [TimeoutError("model timed out")]}, strict=False),
+        gateway=ScriptedFakeModelGateway(
+            {"planning": [TimeoutError("Bearer super-secret-credential")]},
+            strict=False,
+        ),
     )
     try:
         state = service.create_task(repo, "inspect")
         assert state["status"] == TaskStatus.FAILED.value
         assert state["latest_failure"]["category"] == "NODE"
         assert state["latest_failure"]["error_code"] == "TimeoutError"
+        assert state["latest_failure"]["summary"] == "Bearer [REDACTED]"
         assert state["execution_budget"]["llm_calls_used"] == 1
         assert state["execution_budget"]["active_seconds_used"] == 2
         assert service.get_state(state["task_id"]) == state
+        assert service.cancel(state["task_id"], state["state_revision"]) == state
         assert any(event["event_type"] == "node_failed" for event in service.control.events(state["task_id"]))
     finally:
         service.close()

@@ -24,6 +24,7 @@ from devpilot.api.schemas import (
     RecoveryControlRequest,
 )
 from devpilot.domain.models import TaskStatus
+from devpilot.errors import PolicyDeniedError
 from devpilot.events import RedisStreamConsumer
 from devpilot.service import TaskService
 
@@ -37,11 +38,39 @@ class ControlPlaneService:
         tickets: EventTicketStore,
         limiter: RateLimiter,
         live_events: RedisStreamConsumer | None = None,
+        repository_roots: tuple[Path, ...] = (),
     ) -> None:
         self.tasks = tasks
         self.tickets = tickets
         self.limiter = limiter
         self.live_events = live_events
+        self.repository_roots = tuple(root.resolve() for root in repository_roots)
+
+    def _authorize_repository(
+        self, repository: Path, principal: Principal
+    ) -> Path:
+        if not principal.is_admin and not principal.can_create_tasks:
+            raise PolicyDeniedError(
+                "task creation requires admin or task_creator permission"
+            )
+        if not repository.is_absolute():
+            raise ValueError("repository path must be absolute")
+        resolved = repository.resolve()
+        if self.repository_roots:
+            if not any(
+                resolved == root or root in resolved.parents
+                for root in self.repository_roots
+            ):
+                raise PolicyDeniedError(
+                    "repository path is outside DEVPILOT_API_REPOSITORY_ROOTS"
+                )
+        elif not principal.is_admin:
+            raise PolicyDeniedError(
+                "non-admin task creation requires DEVPILOT_API_REPOSITORY_ROOTS"
+            )
+        if not resolved.is_dir():
+            raise ValueError("repository path must be an existing directory")
+        return resolved
 
     def authorize(self, principal: Principal, task_id: str) -> None:
         if self.tasks.control.get_task(task_id) is None:
@@ -99,9 +128,10 @@ class ControlPlaneService:
         self, body: CreateTaskRequest, principal: Principal
     ) -> dict[str, Any]:
         await self._check_rate_limit(principal.subject, "task-create", limit=10)
+        repository = self._authorize_repository(Path(body.repo), principal)
         state = await run_in_threadpool(
             self.tasks.create_task,
-            Path(body.repo),
+            repository,
             body.request,
             revision=body.revision,
             model=body.model,
@@ -121,19 +151,14 @@ class ControlPlaneService:
         items = await run_in_threadpool(
             self.tasks.list_task_views,
             status=task_status.value if task_status else None,
+            owner=None if principal.is_admin else principal.subject,
         )
-        visible = [
-            item
-            for item in items
-            if principal.is_admin
-            or self.tasks.control.task_owner(item["task_id"]) == principal.subject
-        ]
-        page = visible[offset : offset + limit]
+        page = items[offset : offset + limit]
         next_offset = offset + len(page)
         return {
             "items": page,
             "next_cursor": (
-                self._encode_cursor(next_offset) if next_offset < len(visible) else None
+                self._encode_cursor(next_offset) if next_offset < len(items) else None
             ),
         }
 

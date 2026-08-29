@@ -26,9 +26,14 @@ class TaskQueries:
             ).to_state_dict(),
         }
 
-    def list_task_views(self, *, status: str | None = None) -> list[dict[str, Any]]:
+    def list_task_views(
+        self,
+        *,
+        status: str | None = None,
+        owner: str | None = None,
+    ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for projection in self.control.list_tasks():
+        for projection in self.control.list_tasks(owner=owner):
             state = projection["state"]
             if state["status"] == TaskStatus.WAITING_RISK_APPROVAL.value:
                 state = self.get_state(state["task_id"])
@@ -100,12 +105,6 @@ class TaskQueries:
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         operation = "messages"
-        if idempotency_key:
-            cached = self.control.idempotent_result(
-                task_id, operation, idempotency_key
-            )
-            if cached:
-                return cached
         state = self.get_state(task_id)
         normalized = content.strip()
         if not normalized:
@@ -116,6 +115,16 @@ class TaskQueries:
             "content": normalized,
             "created_at": self.clock.now().isoformat(),
         }
+        if idempotency_key:
+            return self.control.append_idempotent_event_payload(
+                task_id,
+                state["run_id"],
+                "message_created",
+                message,
+                operation=operation,
+                key=idempotency_key,
+                correlation_id=message["message_id"],
+            )
         event = self.control.append_event(
             task_id,
             state["run_id"],
@@ -123,12 +132,7 @@ class TaskQueries:
             message,
             correlation_id=message["message_id"],
         )
-        message = dict(event.payload)
-        if idempotency_key:
-            self.control.save_idempotent_result(
-                task_id, operation, idempotency_key, message
-            )
-        return message
+        return dict(event.payload)
 
     def messages(self, task_id: str) -> list[dict[str, Any]]:
         state = self.get_state(task_id)

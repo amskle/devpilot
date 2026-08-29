@@ -34,18 +34,20 @@ class ReplayEvaluationStoreMixin:
             )
 
     def replay_record(self, replay_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT result_json FROM replay_records WHERE replay_id=?",
-            (replay_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT result_json FROM replay_records WHERE replay_id=?",
+                (replay_id,),
+            ).fetchone()
         return json.loads(row["result_json"]) if row else None
 
     def replay_records(self, task_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            """SELECT result_json FROM replay_records
-               WHERE task_id=? ORDER BY created_at, replay_id""",
-            (task_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT result_json FROM replay_records
+                   WHERE task_id=? ORDER BY created_at, replay_id""",
+                (task_id,),
+            ).fetchall()
         return [json.loads(row["result_json"]) for row in rows]
 
     def save_recovery_fork(self, result: dict[str, Any]) -> None:
@@ -89,15 +91,17 @@ class ReplayEvaluationStoreMixin:
             )
 
     def evaluation_report(self, evaluation_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT report_json FROM evaluation_runs WHERE evaluation_id=?",
-            (evaluation_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT report_json FROM evaluation_runs WHERE evaluation_id=?",
+                (evaluation_id,),
+            ).fetchone()
         return json.loads(row["report_json"]) if row else None
 
     def evaluation_reports(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            """SELECT report_json FROM evaluation_runs
-               ORDER BY created_at DESC, evaluation_id DESC"""
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT report_json FROM evaluation_runs
+                   ORDER BY created_at DESC, evaluation_id DESC"""
+            ).fetchall()
         return [json.loads(row["report_json"]) for row in rows]

@@ -33,6 +33,8 @@ class TaskCommands:
         decided_by: str = "cli",
         idempotency_key: str | None = None,
     ) -> GraphState:
+        if decision not in {"APPROVE", "REJECT"}:
+            raise ValueError("decision must be APPROVE or REJECT")
         operation = "approve" if decision == "APPROVE" else "reject"
         if idempotency_key:
             cached = self.control.idempotent_result(task_id, operation, idempotency_key)
@@ -90,11 +92,7 @@ class TaskCommands:
             raise StateConflictError(
                 f"expected state_revision {expected_revision}, actual {state['state_revision']}"
             )
-        if state["status"] in {
-            TaskStatus.COMPLETED.value,
-            TaskStatus.COMPLETED_NO_CHANGES.value,
-            TaskStatus.CANCELLED.value,
-        }:
+        if state["status"] in TERMINAL_STATUSES:
             if idempotency_key:
                 self.control.save_idempotent_result(task_id, "cancel", idempotency_key, state)
             return state
@@ -170,6 +168,7 @@ class TaskCommands:
             {
                 "status": TaskStatus.RUNNING.value,
                 "pause_reason": None,
+                "workspace_ref": self._renew_workspace_lease(state),
                 "pending_replan_request": replan_request.to_state_dict(),
                 "execution_budget": budget.model_copy(
                     update={"plan_revisions_used": budget.plan_revisions_used + 1}
@@ -272,6 +271,7 @@ class TaskCommands:
             {
                 "status": TaskStatus.RUNNING.value,
                 "pause_reason": None,
+                "workspace_ref": self._renew_workspace_lease(state),
                 "context_delta_ref": request_ref.to_state_dict(),
                 "pending_approval": None,
                 "pending_replan_request": replan_request.to_state_dict(),
@@ -329,7 +329,13 @@ class TaskCommands:
             self.checkpointer,
         )
         updated = copy.deepcopy(state)
-        updated.update({"status": TaskStatus.RUNNING.value, "pause_reason": None})
+        updated.update(
+            {
+                "status": TaskStatus.RUNNING.value,
+                "pause_reason": None,
+                "workspace_ref": self._renew_workspace_lease(state),
+            }
+        )
         updated = self.control.transition(
             validate_state(updated),
             expected_revision=expected_revision,

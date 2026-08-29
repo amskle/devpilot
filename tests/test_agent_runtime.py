@@ -1,12 +1,13 @@
 from decimal import Decimal
 from pathlib import Path
+import subprocess
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
 from devpilot.agents.model_gateway import ModelResponse, ScriptedFakeModelGateway
 from devpilot.agents.runner import AgentRunner
-from devpilot.domain.models import AgentSpec, ExecutionBudget, ModelProfile, PlanDraft, WorkspaceRef
+from devpilot.domain.models import AgentSpec, ExecutionBudget, ModelProfile, PatchDraft, PlanDraft, WorkspaceRef
 from devpilot.errors import BudgetExceededError, ModelGatewayError, PolicyDeniedError, ToolExecutionError
 from devpilot.services.budget import BudgetService
 from devpilot.services.pricing import ModelPrice, PricingCatalog
@@ -191,6 +192,97 @@ def test_non_transient_tool_error_keeps_original_code(tmp_path):
     assert attempts == [1]
 
 
+@pytest.mark.parametrize(
+    "operations",
+    [
+        [],
+        [
+            {
+                "target_file": "app.py",
+                "replacements": [{"old": "value", "new": "value"}],
+            }
+        ],
+        [
+            {
+                "target_file": "app.py",
+                "replacements": [{"old": "one", "new": "two"}],
+            },
+            {
+                "target_file": "app.py",
+                "replacements": [{"old": "three", "new": "four"}],
+            },
+        ],
+    ],
+)
+def test_patch_draft_rejects_non_applicable_operations(operations):
+    with pytest.raises(ValueError):
+        PatchDraft(summary="invalid patch", operations=operations)
+
+
+@pytest.mark.parametrize(
+    ("original", "old", "new", "expected_markers"),
+    [
+        ("value = 1", "value = 1", "value = 2", 2),
+        ("value = 1", "value = 1", "value = 2\n", 1),
+        ("value = 1\n", "value = 1\n", "value = 2", 1),
+        ("first = 1\nlast = 2", "first = 1", "first = 2", 1),
+    ],
+)
+def test_patch_generate_emits_git_diff_for_missing_final_newlines(
+    tmp_path, original, old, new, expected_markers
+):
+    target = tmp_path / "app.py"
+    target.write_text(original, encoding="utf-8")
+    executor = ToolExecutor(build_default_registry())
+
+    result = executor.execute(
+        "patch-generate",
+        {
+            "workspace_id": "ws-test",
+            "target_file": "app.py",
+            "replacements": [
+                {"old": old, "new": new, "occurrence": 1}
+            ],
+        },
+        workspace=_workspace(tmp_path),
+        allowed_tools=("patch-generate",),
+        agent_id="patch_generation",
+        operation_id="no-final-newline",
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    patch = result.output["diff"]
+    assert patch.count("\\ No newline at end of file") == expected_markers
+    checked = subprocess.run(
+        ["git", "apply", "--check", "-"],
+        cwd=tmp_path,
+        input=patch.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr.decode(errors="replace")
+
+
+def test_patch_generate_rejects_empty_direct_tool_replacements(tmp_path):
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    executor = ToolExecutor(build_default_registry())
+
+    with pytest.raises(ValueError):
+        executor.execute(
+            "patch-generate",
+            {
+                "workspace_id": "ws-test",
+                "target_file": "app.py",
+                "replacements": [],
+            },
+            workspace=_workspace(tmp_path),
+            allowed_tools=("patch-generate",),
+            agent_id="patch_generation",
+            operation_id="empty-replacements",
+            execution_budget=ExecutionBudget().to_state_dict(),
+        )
+
+
 def test_agent_runner_reserves_and_settles_model_cost(tmp_path):
     gateway = ScriptedFakeModelGateway(
         {
@@ -255,3 +347,18 @@ def test_cost_reservation_and_active_time_stop_calls_before_execution(tmp_path):
 
     with pytest.raises(BudgetExceededError, match="active time"):
         BudgetService().reserve_tool(ExecutionBudget(max_active_seconds=0).to_state_dict())
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-1"])
+def test_execution_budget_rejects_non_finite_or_negative_costs(value):
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        ExecutionBudget(max_cost=value)
+
+
+def test_pricing_and_usage_reject_negative_values():
+    with pytest.raises(ValueError, match="model prices"):
+        ModelPrice(Decimal("-1"), Decimal("1"))
+    with pytest.raises(ValueError, match="token usage"):
+        PricingCatalog(
+            {"priced": ModelPrice(Decimal("1"), Decimal("1"))}
+        ).cost("priced", -1, 0)

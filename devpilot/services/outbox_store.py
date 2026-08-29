@@ -119,13 +119,14 @@ class OutboxStoreMixin:
                 )
 
     def outbox_entries(self, status: str | None = None) -> list[OutboxEntry]:
-        if status is None:
-            rows = self._conn.execute(
-                "SELECT * FROM event_outbox ORDER BY created_at, rowid"
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM event_outbox WHERE status=? ORDER BY created_at, rowid",
-                (status,),
-            ).fetchall()
+        with self._lock:
+            if status is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM event_outbox ORDER BY created_at, rowid"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM event_outbox WHERE status=? ORDER BY created_at, rowid",
+                    (status,),
+                ).fetchall()
         return [self._outbox_from_row(row) for row in rows]

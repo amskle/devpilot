@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -91,13 +92,14 @@ def _change_request_gateway() -> ScriptedFakeModelGateway:
     )
 
 
-def _settings() -> ApiSettings:
+def _settings(*repository_roots: Path) -> ApiSettings:
     return ApiSettings(
         tokens={
-            "alice-token": Principal("alice"),
+            "alice-token": Principal("alice", can_create_tasks=True),
             "bob-token": Principal("bob"),
             "admin-token": Principal("admin", True),
-        }
+        },
+        repository_roots=tuple(repository_roots),
     )
 
 
@@ -127,13 +129,33 @@ def test_openapi_documents_auth_examples_and_control_contract(tmp_path):
         service.close()
 
 
+def test_unprivileged_principal_cannot_execute_repository_tasks(tmp_path):
+    repo = make_test_repo(tmp_path / "repo")
+    service = TaskService(data_dir=tmp_path / "data", gateway=_no_action_gateway())
+    try:
+        settings = ApiSettings(tokens={"alice-token": Principal("alice")})
+        app = create_app(service=service, settings=settings)
+        with TestClient(app) as client:
+            denied = client.post(
+                "/api/tasks",
+                headers=ALICE_HEADERS,
+                json={"repo": str(repo), "request": "inspect repository"},
+            )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "POLICY_DENIED"
+        assert "task_creator" in denied.json()["detail"]
+        assert service.control.list_tasks() == []
+    finally:
+        service.close()
+
+
 def test_task_creation_projection_resource_authorization_and_message_boundary(tmp_path):
     repo = make_test_repo(tmp_path / "repo")
     service = TaskService(
         data_dir=tmp_path / "data", gateway=_no_action_gateway(), model="task-model"
     )
     try:
-        app = create_app(service=service, settings=_settings())
+        app = create_app(service=service, settings=_settings(repo.parent))
         with TestClient(app) as client:
             created = client.post(
                 "/api/tasks",

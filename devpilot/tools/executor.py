@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from typing import Any, Callable, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from devpilot.domain.models import WorkspaceRef
+from devpilot.domain.models import Replacement, WorkspaceRef
 from devpilot.errors import PolicyDeniedError, ToolExecutionError
 from devpilot.services.budget import BudgetService
 from devpilot.workspace import WorkspaceManager
@@ -32,8 +33,8 @@ class AnalysisInput(ToolInput):
 
 
 class PatchGenerateInput(ToolInput):
-    target_file: str
-    replacements: list[dict[str, Any]]
+    target_file: str = Field(min_length=1)
+    replacements: list[Replacement] = Field(min_length=1)
 
 
 class RiskAssessmentInput(ToolInput):
@@ -214,6 +215,66 @@ def _legacy_repo_handler(skill_name: str) -> Callable[[BaseModel, WorkspaceRef],
     return handler
 
 
+_HUNK_HEADER = re.compile(
+    r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@"
+)
+
+
+def _unified_diff(original: str, content: str, relative: str) -> str:
+    """Create a Git-applicable text diff, including missing-newline markers."""
+
+    old_lines = original.splitlines(keepends=True)
+    new_lines = content.splitlines(keepends=True)
+    old_missing_newline = bool(old_lines and not old_lines[-1].endswith(("\n", "\r")))
+    new_missing_newline = bool(new_lines and not new_lines[-1].endswith(("\n", "\r")))
+    normalized_old = [
+        line if line.endswith(("\n", "\r")) else f"{line}\n"
+        for line in old_lines
+    ]
+    normalized_new = [
+        line if line.endswith(("\n", "\r")) else f"{line}\n"
+        for line in new_lines
+    ]
+    generated = difflib.unified_diff(
+        normalized_old,
+        normalized_new,
+        fromfile=f"a/{relative}",
+        tofile=f"b/{relative}",
+    )
+    result: list[str] = []
+    old_line = new_line = 0
+    in_hunk = False
+    for line in generated:
+        result.append(line)
+        match = _HUNK_HEADER.match(line)
+        if match:
+            old_line = int(match.group(1)) - 1
+            new_line = int(match.group(2)) - 1
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if line.startswith("-"):
+            old_line += 1
+            if old_missing_newline and old_line == len(old_lines):
+                result.append("\\ No newline at end of file\n")
+        elif line.startswith("+"):
+            new_line += 1
+            if new_missing_newline and new_line == len(new_lines):
+                result.append("\\ No newline at end of file\n")
+        elif line.startswith(" "):
+            old_line += 1
+            new_line += 1
+            if (
+                old_missing_newline
+                and new_missing_newline
+                and old_line == len(old_lines)
+                and new_line == len(new_lines)
+            ):
+                result.append("\\ No newline at end of file\n")
+    return "".join(result)
+
+
 def _patch_handler(model: BaseModel, workspace: WorkspaceRef) -> dict[str, Any]:
     value = PatchGenerateInput.model_validate(model)
     target = WorkspaceManager.resolve_path(workspace, value.target_file)
@@ -222,11 +283,9 @@ def _patch_handler(model: BaseModel, workspace: WorkspaceRef) -> dict[str, Any]:
     original = target.read_text(encoding="utf-8", errors="ignore")
     content = original
     for replacement in value.replacements:
-        old = str(replacement["old"])
-        new = str(replacement["new"])
-        occurrence = int(replacement.get("occurrence", 1))
-        if occurrence < 1:
-            raise ToolExecutionError("INVALID_REPLACEMENT", "occurrence must be >= 1")
+        old = replacement.old
+        new = replacement.new
+        occurrence = replacement.occurrence
         start = 0
         position = -1
         for _ in range(occurrence):
@@ -235,13 +294,10 @@ def _patch_handler(model: BaseModel, workspace: WorkspaceRef) -> dict[str, Any]:
                 raise ToolExecutionError("REPLACEMENT_TARGET_NOT_FOUND", old[:100])
             start = position + len(old)
         content = content[:position] + new + content[position + len(old) :]
+    if content == original:
+        raise ToolExecutionError("EMPTY_PATCH", "replacements produced no file change")
     relative = target.relative_to(Path(workspace.worktree_ref).resolve()).as_posix()
-    diff = "".join(
-        difflib.unified_diff(
-            original.splitlines(keepends=True), content.splitlines(keepends=True),
-            fromfile=f"a/{relative}", tofile=f"b/{relative}",
-        )
-    )
+    diff = _unified_diff(original, content, relative)
     return {"diff": diff, "new_content_hash": hashlib.sha256(content.encode()).hexdigest(), "applied": False}
 
 

@@ -13,15 +13,22 @@ IGNORED_DIRECTORIES = {
     "node_modules",
     "target",
 }
+MAX_SCANNED_FILE_BYTES = 2 * 1024 * 1024
 
 
 def should_scan(repo: Path, path: Path) -> bool:
     """Filter repository-relative paths without inspecting hidden parent directories."""
-    if not path.is_file():
+    if path.is_symlink():
         return False
     try:
-        relative = path.relative_to(repo)
-    except ValueError:
+        resolved_repo = repo.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+        relative = resolved_path.relative_to(resolved_repo)
+        if not resolved_path.is_file():
+            return False
+        if resolved_path.stat().st_size > MAX_SCANNED_FILE_BYTES:
+            return False
+    except (OSError, ValueError):
         return False
     return not any(
         part.startswith(".") or part in IGNORED_DIRECTORIES

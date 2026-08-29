@@ -26,7 +26,7 @@ class PlanStoreMixin:
             raise ValueError("ReplanRequest does not belong to this task run")
         new_revision = expected_revision + 1
         updated["state_revision"] = new_revision
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             row = self._conn.execute(
                 "SELECT state_revision FROM task_projection WHERE task_id=?",
                 (updated["task_id"],),
@@ -81,7 +81,7 @@ class PlanStoreMixin:
         new_revision = expected_revision + 1
         updated["state_revision"] = new_revision
         accepted_at = self.clock.now().isoformat()
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             row = self._conn.execute(
                 "SELECT state_revision FROM task_projection WHERE task_id=?",
                 (updated["task_id"],),
@@ -175,7 +175,7 @@ class PlanStoreMixin:
         new_revision = expected_revision + 1
         updated["state_revision"] = new_revision
         activated_at = self.clock.now().isoformat()
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             row = self._conn.execute(
                 "SELECT state_revision FROM task_projection WHERE task_id=?",
                 (updated["task_id"],),
@@ -278,15 +278,16 @@ class PlanStoreMixin:
         return validate_state(updated)
 
     def plans(self, task_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            """SELECT d.document_json, d.artifact_ref_json, l.plan_id, l.version,
-                      l.status, l.activated_at, l.superseded_at
-               FROM plan_documents d
-               JOIN plan_lifecycles l
-                 ON l.task_id=d.task_id AND l.plan_id=d.plan_id AND l.version=d.version
-               WHERE d.task_id=? ORDER BY d.version""",
-            (task_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT d.document_json, d.artifact_ref_json, l.plan_id, l.version,
+                          l.status, l.activated_at, l.superseded_at
+                   FROM plan_documents d
+                   JOIN plan_lifecycles l
+                     ON l.task_id=d.task_id AND l.plan_id=d.plan_id AND l.version=d.version
+                   WHERE d.task_id=? ORDER BY d.version""",
+                (task_id,),
+            ).fetchall()
         return [
             {
                 "document": json.loads(row["document_json"]),
@@ -303,11 +304,12 @@ class PlanStoreMixin:
         ]
 
     def replan_requests(self, task_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT request_json, status, consumed_at FROM replan_requests "
-            "WHERE task_id=? ORDER BY created_at",
-            (task_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT request_json, status, consumed_at FROM replan_requests "
+                "WHERE task_id=? ORDER BY created_at",
+                (task_id,),
+            ).fetchall()
         return [
             {
                 **json.loads(row["request_json"]),
@@ -318,11 +320,12 @@ class PlanStoreMixin:
         ]
 
     def change_requests(self, task_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT request_json, status, accepted_at FROM change_requests "
-            "WHERE task_id=? ORDER BY created_at",
-            (task_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT request_json, status, accepted_at FROM change_requests "
+                "WHERE task_id=? ORDER BY created_at",
+                (task_id,),
+            ).fetchall()
         return [
             {
                 **json.loads(row["request_json"]),

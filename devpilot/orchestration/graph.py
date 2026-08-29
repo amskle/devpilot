@@ -112,7 +112,17 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         if runtime.source_repo is None:
             raise RuntimeError("source repository is required for a new task")
         workspace = runtime.workspace_manager.create(
-            runtime.source_repo, state["task_id"], state["run_id"], revision=runtime.revision
+            runtime.source_repo,
+            state["task_id"],
+            state["run_id"],
+            revision=runtime.revision,
+            lease_ttl_seconds=max(
+                runtime.approval_ttl_seconds,
+                ExecutionBudget.from_state_dict(
+                    state["execution_budget"]
+                ).max_active_seconds,
+            )
+            + 300,
         )
         return _merge_transition(
             runtime,
@@ -154,7 +164,15 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
 
     def baseline_verification(state: GraphState) -> GraphState:
         context = _read_json(runtime, state, state["baseline_context_ref"]) or {}
-        if context.get("build_tool") not in {"maven", "npm", "pip", "poetry"}:
+        if context.get("build_tool") not in {
+            "cargo",
+            "go",
+            "gradle",
+            "maven",
+            "npm",
+            "pip",
+            "poetry",
+        }:
             return _merge_transition(
                 runtime,
                 state,

@@ -11,6 +11,17 @@ def test_python_project_detection():
         result = run({"repo_path": tmp})
         assert result["status"] == "ok"
         assert result["data"]["project_type"] == "python"
+        assert result["data"]["build_tool"] == "pip"
+
+
+def test_poetry_project_detection():
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "pyproject.toml").write_text(
+            "[tool.poetry]\nname='demo'\n", encoding="utf-8"
+        )
+
+        result = run({"repo_path": tmp})
+
         assert result["data"]["build_tool"] == "poetry"
 
 

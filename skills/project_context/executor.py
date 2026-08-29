@@ -5,8 +5,9 @@ from pathlib import Path
 BUILD_MARKERS = {
     "pom.xml": ("java", "maven"),
     "build.gradle": ("java", "gradle"),
+    "build.gradle.kts": ("java", "gradle"),
     "package.json": ("javascript", "npm"),
-    "pyproject.toml": ("python", "poetry"),
+    "pyproject.toml": ("python", "pip"),
     "requirements.txt": ("python", "pip"),
     "go.mod": ("go", "go"),
     "Cargo.toml": ("rust", "cargo"),
@@ -14,8 +15,11 @@ BUILD_MARKERS = {
 
 
 def _safe_read(path: Path, limit: int = 4096) -> str:
+    if path.is_symlink() or not path.is_file():
+        return ""
     try:
-        return path.read_text(encoding="utf-8", errors="ignore")[:limit]
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            return handle.read(limit)
     except OSError:
         return ""
 
@@ -34,6 +38,10 @@ def run(inputs: dict) -> dict:
     for marker, (ptype, tool) in BUILD_MARKERS.items():
         if (repo / marker).exists():
             project_type, build_tool = ptype, tool
+            if marker == "pyproject.toml" and "[tool.poetry]" in _safe_read(
+                repo / marker
+            ):
+                build_tool = "poetry"
             break
 
     tech_stack = [project_type]

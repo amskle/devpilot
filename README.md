@@ -361,7 +361,8 @@ devpilot eval run|show|list|compare
 | `DEVPILOT_MODEL` | 默认模型名称 | `gpt-5-mini` | 否 |
 | `DEVPILOT_DATA_DIR` | Control DB、Checkpoint、Artifact 和 worktree 根目录 | `~/.devpilot` | 否 |
 | `DEVPILOT_ENV` | API 环境名称 | `development` | 生产建议设为 `production` |
-| `DEVPILOT_API_TOKENS` | Token 到主体/管理员权限的 JSON 映射 | 开发环境使用 `devpilot-local` | 非开发环境或非回环监听 |
+| `DEVPILOT_API_TOKENS` | Token 到主体、管理员及任务创建权限的 JSON 映射；生产 Token 至少 32 字符 | 开发环境使用 `devpilot-local` | 非开发环境或非回环监听 |
+| `DEVPILOT_API_REPOSITORY_ROOTS` | API 可创建任务的仓库根目录 JSON 数组 | 空；此时仅管理员可创建 | 普通 API 用户创建任务 |
 | `DEVPILOT_API_CORS_ORIGINS` | 允许的 Origin，逗号分隔 | 空 | 前后端跨域部署时 |
 | `DEVPILOT_REDIS_URL` | Redis/Redis TLS URL | 无 | 非开发环境或多 Worker |
 | `DEVPILOT_REDIS_KEY_PREFIX` | 票据、限流和 Stream 命名空间 | `devpilot` | 否 |
@@ -370,11 +371,14 @@ devpilot eval run|show|list|compare
 | `DEVPILOT_API_WORKERS` | API Worker 数量校验值 | `1` | CLI 会根据 `--workers` 自动设置 |
 | `VITE_API_BASE_URL` | Vue 3 控制台的 API 前缀 | `/api` | 前端独立部署时 |
 
+通过 API 创建任务会运行仓库自身的测试/构建命令，因此属于特权操作：管理员默认拥有该权限；非管理员主体必须在 Token 映射中显式设置 `"task_creator": true`，并同时配置 `DEVPILOT_API_REPOSITORY_ROOTS`。未授权主体仍可查询和控制自己已有的任务。
+
 生产或多 Worker 示例：
 
 ```powershell
 $env:DEVPILOT_ENV = "production"
 $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
+$env:DEVPILOT_API_REPOSITORY_ROOTS = '["C:\\repos"]'
 $env:DEVPILOT_API_CORS_ORIGINS = "https://devpilot.example.com"
 $env:DEVPILOT_REDIS_URL = "redis://127.0.0.1:6379/0"
 

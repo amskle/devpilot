@@ -11,7 +11,7 @@ FIXABLE_ISSUES = {"mutable-default-argument", "bare-except"}
 
 
 def _operations(repo: Path, issues: list[dict]) -> list[dict]:
-    result = []
+    operations_by_file: dict[str, dict] = {}
     for issue in issues:
         if issue["issue"] not in FIXABLE_ISSUES:
             continue
@@ -33,14 +33,15 @@ def _operations(repo: Path, issues: list[dict]) -> list[dict]:
                 continue
             old = match.group(0)
             new = f"{match.group(1)}except Exception:"
-        result.append(
-            {
-                "target_file": relative,
-                "issues": [issue["issue"]],
-                "replacements": [{"old": old, "new": new, "occurrence": 1}],
-            }
+        operation = operations_by_file.setdefault(
+            relative,
+            {"target_file": relative, "issues": [], "replacements": []},
         )
-    return result
+        operation["issues"].append(issue["issue"])
+        operation["replacements"].append(
+            {"old": old, "new": new, "occurrence": 1}
+        )
+    return list(operations_by_file.values())
 
 
 def legacy_scenario(repo: Path) -> ScriptedFakeModelGateway:

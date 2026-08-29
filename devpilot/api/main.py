@@ -88,7 +88,11 @@ def create_app(
         tickets = EventTicketStore(api_settings.ticket_ttl_seconds)
         limiter = RateLimiter()
     control_plane = ControlPlaneService(
-        task_service, tickets, limiter, live_events=live_events
+        task_service,
+        tickets,
+        limiter,
+        live_events=live_events,
+        repository_roots=api_settings.repository_roots,
     )
 
     async def run_relay(stop: asyncio.Event) -> None:

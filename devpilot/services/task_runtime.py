@@ -22,9 +22,11 @@ from devpilot.domain.models import (
     FailureRecord,
     ModelProfile,
     TaskStatus,
+    WorkspaceRef,
 )
 from devpilot.domain.state import GraphState, create_initial_state, validate_state
 from devpilot.errors import BudgetExceededError, PolicyDeniedError, StateConflictError
+from devpilot.events.redaction import sanitize_event_value
 from devpilot.orchestration.graph import GraphRuntime, build_graph
 from devpilot.services.pricing import PricingCatalog
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore, default_data_dir
@@ -169,6 +171,24 @@ class TaskRuntimeCore:
             state["task_id"], artifact_run_id or state["run_id"], ref
         )
 
+    def _lease_ttl_seconds(self, state: GraphState) -> int:
+        budget = ExecutionBudget.from_state_dict(state["execution_budget"])
+        return max(self.approval_ttl_seconds, budget.max_active_seconds) + 300
+
+    def _renew_workspace_lease(
+        self,
+        state: GraphState,
+        *,
+        new_owner: str | None = None,
+    ) -> dict[str, Any]:
+        workspace = WorkspaceRef.from_state_dict(state["workspace_ref"] or {})
+        return self.workspace_manager.renew_lease(
+            workspace,
+            expected_owner=state["run_id"],
+            new_owner=new_owner,
+            lease_ttl_seconds=self._lease_ttl_seconds(state),
+        ).to_state_dict()
+
     def _invoke(
         self, graph: Any, run_id: str, value: GraphState | Command
     ) -> GraphState:
@@ -205,6 +225,7 @@ class TaskRuntimeCore:
                 status = TaskStatus.FAILED.value
                 category = "NODE"
             error_code = str(getattr(exc, "code", type(exc).__name__))
+            safe_summary = str(sanitize_event_value(str(exc)))[:1000]
             failure = FailureRecord(
                 failure_id=f"failure_{uuid.uuid4().hex[:16]}",
                 iteration=ExecutionBudget.from_state_dict(
@@ -212,7 +233,7 @@ class TaskRuntimeCore:
                 ).iterations_used,
                 category=category,
                 error_code=error_code,
-                summary=str(exc)[:1000],
+                summary=safe_summary,
                 symptom_fingerprint=hashlib.sha256(
                     f"{error_code}:{type(exc).__name__}".encode()
                 ).hexdigest(),
@@ -278,10 +299,20 @@ class TaskRuntimeCore:
         parent_run_id: str | None = None,
         prompt_overrides: dict[str, str] | None = None,
     ) -> GraphState:
+        normalized_request = request.strip()
+        if not normalized_request:
+            raise ValueError("task request must not be empty")
+        if len(normalized_request) > 20_000:
+            raise ValueError("task request must not exceed 20000 characters")
+        normalized_revision = revision.strip()
+        if not normalized_revision:
+            raise ValueError("revision must not be empty")
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         run_id = f"run_{uuid.uuid4().hex[:16]}"
         selected_budget = budget or ExecutionBudget()
-        selected_model = model or self.model_name
+        selected_model = (model or self.model_name).strip()
+        if not selected_model:
+            raise ValueError("model must not be empty")
         catalog = PricingCatalog.from_file(self.data_dir / "pricing" / "catalog.json")
         if selected_budget.max_cost is not None and selected_model not in catalog.entries:
             raise ValueError(f"max_cost requires pricing data for model: {selected_model}")
@@ -289,14 +320,16 @@ class TaskRuntimeCore:
             raise ValueError(
                 "per-task model override requires a gateway_factory when a gateway is injected"
             )
-        self.workspace_manager.validate_source(repo.resolve(), revision)
+        self.workspace_manager.validate_source(repo.resolve(), normalized_revision)
         state = create_initial_state(
             task_id,
             run_id,
             parent_run_id=parent_run_id,
             budget=selected_budget,
         )
-        request_ref = self.artifacts.put_text(task_id, run_id, "task_request", request)
+        request_ref = self.artifacts.put_text(
+            task_id, run_id, "task_request", normalized_request
+        )
         state["context_delta_ref"] = request_ref.to_state_dict()
         snapshot = catalog.snapshot(
             self.artifacts, task_id, run_id, selected_model=selected_model
@@ -306,8 +339,8 @@ class TaskRuntimeCore:
         self.control.create_task(state)
         runtime = self._runtime(
             source_repo=repo.resolve(),
-            request=request,
-            revision=revision,
+            request=normalized_request,
+            revision=normalized_revision,
             pricing_catalog=(
                 catalog if selected_budget.max_cost is not None else None
             ),
@@ -325,7 +358,7 @@ class TaskRuntimeCore:
         if not snapshot.values:
             raise KeyError(f"checkpoint not found for run: {run_id}")
         state = validate_state(dict(snapshot.values))
-        self.control.reconcile(state)
+        self.control.reconcile(state, defer_if_newer_seconds=5)
         return graph, state
 
     def get_state(self, task_id: str, *, check_expiry: bool = True) -> GraphState:

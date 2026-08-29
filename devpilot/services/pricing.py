@@ -14,6 +14,13 @@ class ModelPrice:
     prompt_per_million: Decimal
     completion_per_million: Decimal
 
+    def __post_init__(self) -> None:
+        if any(
+            not value.is_finite() or value < 0
+            for value in (self.prompt_per_million, self.completion_per_million)
+        ):
+            raise ValueError("model prices must be finite and non-negative")
+
 
 class PricingCatalog:
     def __init__(self, entries: dict[str, ModelPrice] | None = None):
@@ -64,6 +71,8 @@ class PricingCatalog:
     def cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> str:
         if model not in self.entries:
             raise ValueError(f"no pricing data for model: {model}")
+        if prompt_tokens < 0 or completion_tokens < 0:
+            raise ValueError("token usage must be non-negative")
         price = self.entries[model]
         value = (price.prompt_per_million * prompt_tokens + price.completion_per_million * completion_tokens) / Decimal(1_000_000)
         return format(value.quantize(Decimal("0.0001")), "f")

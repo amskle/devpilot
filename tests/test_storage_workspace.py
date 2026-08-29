@@ -1,4 +1,5 @@
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +71,110 @@ def test_event_first_projection_uses_optimistic_lock_and_reconcile(tmp_path):
     control.close()
 
 
+def test_cross_process_style_transitions_are_serialized_by_revision(tmp_path):
+    path = tmp_path / "control.sqlite"
+    first = SQLiteControlStore(path)
+    second = SQLiteControlStore(path)
+    state = create_initial_state("task", "run")
+    first.create_task(state)
+    barrier = threading.Barrier(2)
+    successes = []
+    failures = []
+
+    def advance(store, event_type):
+        changed = dict(state)
+        changed["status"] = "RUNNING"
+        barrier.wait()
+        try:
+            successes.append(
+                store.transition(
+                    changed,
+                    expected_revision=0,
+                    event_type=event_type,
+                )
+            )
+        except StateConflictError as exc:
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=advance, args=(first, "first")),
+        threading.Thread(target=advance, args=(second, "second")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(successes) == len(failures) == 1
+    assert first.get_task("task")["state_revision"] == 1
+    first.close()
+    second.close()
+
+
+def test_idempotent_event_append_is_atomic_across_store_instances(tmp_path):
+    path = tmp_path / "control.sqlite"
+    first = SQLiteControlStore(path)
+    second = SQLiteControlStore(path)
+    state = create_initial_state("task", "run")
+    first.create_task(state)
+    barrier = threading.Barrier(2)
+    results = []
+    payload = {
+        "message_id": "message-one",
+        "role": "user",
+        "content": "hello",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+
+    def append(store):
+        barrier.wait()
+        results.append(
+            store.append_idempotent_event_payload(
+                "task",
+                "run",
+                "message_created",
+                payload,
+                operation="messages",
+                key="same-key",
+                correlation_id="message-one",
+            )
+        )
+
+    threads = [
+        threading.Thread(target=append, args=(first,)),
+        threading.Thread(target=append, args=(second,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results == [payload, payload]
+    assert sum(
+        event["event_type"] == "message_created"
+        for event in first.events("task", "run")
+    ) == 1
+    first.close()
+    second.close()
+
+
+def test_automatic_reconcile_defers_a_recent_projection_ahead_state(tmp_path):
+    clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    control = SQLiteControlStore(tmp_path / "control.sqlite", clock)
+    state = create_initial_state("task", "run")
+    control.create_task(state)
+    changed = dict(state)
+    changed["status"] = "RUNNING"
+    control.transition(changed, expected_revision=0, event_type="advanced")
+
+    with pytest.raises(StateConflictError, match="awaiting checkpoint"):
+        control.reconcile(state, defer_if_newer_seconds=5)
+
+    clock.advance(seconds=6)
+    assert control.reconcile(state, defer_if_newer_seconds=5) is True
+    control.close()
+
+
 def test_workspace_rejects_dirty_repo_and_keeps_source_unchanged(tmp_path):
     repo = make_repo(tmp_path / "repo")
     original = (repo / "app.py").read_text(encoding="utf-8")
@@ -115,10 +220,40 @@ def test_workspace_git_uses_utf8_for_patch_input(tmp_path, monkeypatch):
 
     def fake_run(*args, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr("devpilot.workspace.subprocess.run", fake_run)
     WorkspaceManager._git(tmp_path, "apply", "--check", "-", input_text="// 正常除法\n")
 
-    assert captured["encoding"] == "utf-8"
-    assert captured["input"] == "// 正常除法\n"
+    assert captured["input"] == "// 正常除法\n".encode("utf-8")
+
+
+def test_workspace_create_cleans_partial_directory_after_clone_failure(
+    tmp_path, monkeypatch
+):
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(manager, "validate_source", lambda *_: "revision")
+    monkeypatch.setattr(
+        "devpilot.workspace.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="clone failed"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="clone failed"):
+        manager.create(source, "task", "run")
+
+    assert not (tmp_path / "workspaces" / "task" / "run").exists()
+
+
+def test_append_event_rejects_stale_run(tmp_path):
+    store = SQLiteControlStore(tmp_path / "control.sqlite")
+    state = create_initial_state("task", "run-current")
+    store.create_task(state)
+
+    with pytest.raises(StateConflictError, match="run changed"):
+        store.append_event("task", "run-stale", "message_created", {})
+
+    store.close()

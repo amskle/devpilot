@@ -12,3 +12,9 @@ def test_small_change_is_low_risk():
     diff = "+++ b/app.py\n+value = 2\n- value = 1\n"
     result = run({"diff": diff})
     assert result["data"]["level"] == "Low"
+
+
+def test_low_risk_score_is_never_negative():
+    result = run({"diff": "+++ b/tests/test_example.py\n+assert True\n"})
+
+    assert result["data"]["score"] == 0

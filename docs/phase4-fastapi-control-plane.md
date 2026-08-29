@@ -71,7 +71,9 @@ $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operat
 python -m devpilot api
 ```
 
-普通用户只能访问自己通过 API 创建的任务；管理员可以访问历史 CLI 任务和所有 API 任务。为避免泄露任务是否存在，越权访问与不存在任务都返回 HTTP 404。
+普通用户只能访问归属自己的任务；管理员可以访问历史 CLI 任务和所有 API 任务。为避免泄露任务是否存在，越权访问与不存在任务都返回 HTTP 404。
+
+创建任务会运行目标仓库的构建/测试代码，因此是单独的权限边界。管理员可以创建任务；普通主体必须在 `DEVPILOT_API_TOKENS` 对应对象中设置 `"task_creator": true`，且仓库路径必须位于 `DEVPILOT_API_REPOSITORY_ROOTS`。没有该权限的普通主体仍可访问和控制已归属自己的任务。
 
 ## 接口契约
 
@@ -144,6 +146,7 @@ ChangeRequest 使用独立不可变记录，并与内部 ReplanRequest 建立来
 | 环境变量 | 说明 |
 |---|---|
 | `DEVPILOT_API_TOKENS` | Token 到主体信息的 JSON 映射；生产必填 |
+| `DEVPILOT_API_REPOSITORY_ROOTS` | 允许通过 API 创建任务的服务器仓库根目录 JSON 数组；普通主体使用创建接口时必填 |
 | `DEVPILOT_API_CORS_ORIGINS` | 逗号分隔的允许 Origin；同源部署无需设置 |
 | `DEVPILOT_ENV` | 环境名称；非 `development` 时禁用默认 Token 并要求 Redis |
 | `DEVPILOT_REDIS_URL` | Phase 6 共享票据、限流和实时事件 Redis URL |

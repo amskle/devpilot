@@ -7,6 +7,14 @@ import sys
 from pathlib import Path
 
 
+def _text_tail(value: str | bytes | None, limit: int = 8000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value[-limit:]
+
+
 def _launch_command(executable: str | Path, *arguments: str) -> list[str] | str:
     resolved = str(executable)
     if os.name == "nt" and Path(resolved).suffix.lower() in {".bat", ".cmd"}:
@@ -32,9 +40,22 @@ def _detect_command(cwd: Path) -> list[str] | str:
         if (cwd / "mvnw").is_file():
             return _launch_command(cwd / "mvnw", "-q", "test")
         return ["mvn", "-q", "test"]
+    if (cwd / "build.gradle").exists() or (cwd / "build.gradle.kts").exists():
+        gradle = shutil.which("gradle")
+        if gradle:
+            return _launch_command(gradle, "test")
+        if os.name == "nt" and (cwd / "gradlew.bat").is_file():
+            return _launch_command(cwd / "gradlew.bat", "test")
+        if (cwd / "gradlew").is_file():
+            return _launch_command(cwd / "gradlew", "test")
+        return ["gradle", "test"]
     if (cwd / "package.json").exists():
         npm = shutil.which("npm")
         return _launch_command(npm or "npm", "test")
+    if (cwd / "go.mod").exists():
+        return [shutil.which("go") or "go", "test", "./..."]
+    if (cwd / "Cargo.toml").exists():
+        return [shutil.which("cargo") or "cargo", "test", "--quiet"]
     return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"]
 
 
@@ -62,8 +83,8 @@ def run(inputs: dict) -> dict:
             "data": {
                 "passed": proc.returncode == 0,
                 "exit_code": proc.returncode,
-                "stdout": proc.stdout[-8000:],
-                "stderr": proc.stderr[-8000:],
+                "stdout": _text_tail(proc.stdout),
+                "stderr": _text_tail(proc.stderr),
             },
         }
     except subprocess.TimeoutExpired as exc:
@@ -72,7 +93,7 @@ def run(inputs: dict) -> dict:
             "data": {
                 "passed": False,
                 "exit_code": -1,
-                "stdout": (exc.stdout or "")[-8000:],
+                "stdout": _text_tail(exc.stdout),
                 "stderr": f"timeout after {timeout}s",
             },
         }

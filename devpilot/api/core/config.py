@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 class Principal:
     subject: str
     is_admin: bool = False
+    can_create_tasks: bool = False
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class ApiSettings:
     worker_count: int = 1
     relay_poll_interval_seconds: float = 0.25
     uses_default_token: bool = False
+    repository_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.tokens:
@@ -61,17 +64,24 @@ class ApiSettings:
                 raise ValueError("DEVPILOT_API_TOKENS must be a JSON object")
             tokens: dict[str, Principal] = {}
             for token, value in parsed.items():
-                if not str(token).strip():
+                token_text = str(token)
+                if not token_text.strip():
                     raise ValueError("API tokens must not be empty")
+                if environment != "development" and len(token_text) < 32:
+                    raise ValueError(
+                        "production API tokens must contain at least 32 characters"
+                    )
                 if isinstance(value, str):
                     if not value.strip():
                         raise ValueError("API token subjects must not be empty")
-                    tokens[str(token)] = Principal(value)
+                    tokens[token_text] = Principal(value.strip())
                 elif isinstance(value, dict) and value.get("subject"):
                     if not str(value["subject"]).strip():
                         raise ValueError("API token subjects must not be empty")
-                    tokens[str(token)] = Principal(
-                        str(value["subject"]), bool(value.get("admin", False))
+                    tokens[token_text] = Principal(
+                        str(value["subject"]).strip(),
+                        bool(value.get("admin", False)),
+                        bool(value.get("task_creator", False)),
                     )
                 else:
                     raise ValueError(
@@ -90,6 +100,27 @@ class ApiSettings:
             uses_default_token = True
         raw_origins = os.environ.get("DEVPILOT_API_CORS_ORIGINS", "")
         origins = tuple(item.strip() for item in raw_origins.split(",") if item.strip())
+        raw_repository_roots = os.environ.get("DEVPILOT_API_REPOSITORY_ROOTS")
+        repository_roots: tuple[Path, ...] = ()
+        if raw_repository_roots:
+            parsed_roots: Any = json.loads(raw_repository_roots)
+            if not isinstance(parsed_roots, list) or any(
+                not isinstance(item, str) or not item.strip()
+                for item in parsed_roots
+            ):
+                raise ValueError(
+                    "DEVPILOT_API_REPOSITORY_ROOTS must be a JSON array of paths"
+                )
+            expanded_roots = [Path(item).expanduser() for item in parsed_roots]
+            if any(not root.is_absolute() for root in expanded_roots):
+                raise ValueError(
+                    "DEVPILOT_API_REPOSITORY_ROOTS paths must be absolute"
+                )
+            repository_roots = tuple(root.resolve() for root in expanded_roots)
+            if any(not root.is_dir() for root in repository_roots):
+                raise ValueError(
+                    "DEVPILOT_API_REPOSITORY_ROOTS paths must be existing directories"
+                )
         redis_url = os.environ.get("DEVPILOT_REDIS_URL")
         worker_count = int(os.environ.get("DEVPILOT_API_WORKERS", "1"))
         ticket_ttl = int(os.environ.get("DEVPILOT_EVENT_TICKET_TTL_SECONDS", "30"))
@@ -104,4 +135,5 @@ class ApiSettings:
             worker_count=worker_count,
             relay_poll_interval_seconds=relay_interval,
             uses_default_token=uses_default_token,
+            repository_roots=repository_roots,
         )

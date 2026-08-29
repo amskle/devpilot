@@ -16,8 +16,10 @@
 
 - API Key 只从 `DEVPILOT_MODEL_API_KEY` 读取，不写入 State、Event 或 Artifact。
 - 默认管理员 Token `devpilot-local` 仅在 development 可用；非开发环境缺少显式 API Token 时启动失败。
+- API 仓库路径受 `DEVPILOT_API_REPOSITORY_ROOTS` 约束；没有配置根目录时，普通主体不能从服务器本地路径创建任务。
+- 远程创建任务属于特权操作：测试和构建会执行仓库代码，非管理员必须同时具备 `task_creator` 权限和仓库根目录授权。扫描器拒绝工作区符号链接和超大源码文件，防止越界读取与明显的内存消耗。
 - 生产 WebSocket 票据和限流状态存入 Redis。票据仅以哈希 Key 保存并原子消费；Redis 不可用时 fail-closed。
-- Phase 1 通过 workspace 路径边界和 Tool 白名单隔离；容器沙箱是后续增强项。
+- Phase 1 通过 workspace 路径边界和 Tool 白名单隔离；测试进程仍以 DevPilot OS 账户运行，容器沙箱是生产硬化的后续必需项。
 - 硬编码密钥由 SecurityScan 检测并仅报告，不自动修复。
 
 ## Replay 与评测

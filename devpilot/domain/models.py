@@ -60,24 +60,24 @@ class WorkspaceRef(StrictModel):
 
 
 class ExecutionBudget(StrictModel):
-    max_iterations: int = 3
-    max_plan_revisions: int = 2
-    max_rollbacks: int = 2
-    max_llm_calls: int = 20
-    max_tool_calls: int = 40
-    max_tool_retries: int = 8
-    max_total_tokens: int = 100_000
+    max_iterations: int = Field(default=3, ge=0)
+    max_plan_revisions: int = Field(default=2, ge=0)
+    max_rollbacks: int = Field(default=2, ge=0)
+    max_llm_calls: int = Field(default=20, ge=0)
+    max_tool_calls: int = Field(default=40, ge=0)
+    max_tool_retries: int = Field(default=8, ge=0)
+    max_total_tokens: int = Field(default=100_000, ge=0)
     max_cost: str | None = None
     cost_currency: str = "USD"
     max_active_seconds: int = Field(default=1800, ge=0)
-    iterations_used: int = 0
-    plan_revisions_used: int = 0
-    rollbacks_used: int = 0
-    llm_calls_used: int = 0
-    tool_calls_used: int = 0
-    tool_retries_used: int = 0
-    prompt_tokens_used: int = 0
-    completion_tokens_used: int = 0
+    iterations_used: int = Field(default=0, ge=0)
+    plan_revisions_used: int = Field(default=0, ge=0)
+    rollbacks_used: int = Field(default=0, ge=0)
+    llm_calls_used: int = Field(default=0, ge=0)
+    tool_calls_used: int = Field(default=0, ge=0)
+    tool_retries_used: int = Field(default=0, ge=0)
+    prompt_tokens_used: int = Field(default=0, ge=0)
+    completion_tokens_used: int = Field(default=0, ge=0)
     cost_used: str = "0.0000"
     pricing_snapshot_ref: str | None = None
     active_seconds_used: int = Field(default=0, ge=0)
@@ -85,8 +85,10 @@ class ExecutionBudget(StrictModel):
     @field_validator("max_cost", "cost_used")
     @classmethod
     def validate_decimal(cls, value: str | None) -> str | None:
-        if value is not None and Decimal(value) < 0:
-            raise ValueError("cost must be non-negative")
+        if value is not None:
+            number = Decimal(value)
+            if not number.is_finite() or number < 0:
+                raise ValueError("cost must be finite and non-negative")
         return value
 
 
@@ -199,20 +201,36 @@ class DiagnosisSummary(StrictModel):
 
 
 class Replacement(StrictModel):
-    old: str
+    old: str = Field(min_length=1)
     new: str
     occurrence: int = Field(default=1, ge=1)
 
+    @model_validator(mode="after")
+    def validate_effective_change(self):
+        if self.old == self.new:
+            raise ValueError("replacement must change the matched content")
+        return self
+
 
 class PatchOperation(StrictModel):
-    target_file: str
-    replacements: list[Replacement]
+    target_file: str = Field(min_length=1)
+    replacements: list[Replacement] = Field(min_length=1)
     issues: list[str] = Field(default_factory=list)
 
 
 class PatchDraft(StrictModel):
     summary: str
-    operations: list[PatchOperation]
+    operations: list[PatchOperation] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_target_files(self):
+        normalized = [
+            operation.target_file.replace("\\", "/")
+            for operation in self.operations
+        ]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("PatchDraft must contain at most one operation per target file")
+        return self
 
 
 class PatchProposal(StrictModel):

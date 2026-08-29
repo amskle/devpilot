@@ -27,12 +27,17 @@ python -m devpilot api --host 127.0.0.1 --port 8000
 ```powershell
 $env:DEVPILOT_ENV = "production"
 $env:DEVPILOT_API_TOKENS = '{"replace-with-long-random-token":{"subject":"operator-1","admin":true}}'
+$env:DEVPILOT_API_REPOSITORY_ROOTS = '["C:\\repos"]'
 $env:DEVPILOT_API_CORS_ORIGINS = "https://devpilot.example.com"
 $env:DEVPILOT_REDIS_URL = "redis://127.0.0.1:6379/0"
 python -m devpilot api --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 生产和多 worker 模式必须使用 Redis。当前本机安装位于 `A:\Redis` 时，可先确认 Windows 服务 `Redis` 已启动，再检查 `GET /api/ready`。所有 worker 还必须共享同一个 `DEVPILOT_DATA_DIR`。完整接口说明见 [Phase 4 控制面](phase4-fastapi-control-plane.md)，分布式部署语义见 [Phase 6 控制面](phase6-distributed-control-plane.md)。
+
+`DEVPILOT_API_REPOSITORY_ROOTS` 必须是绝对路径组成的 JSON 数组。配置后，管理员和普通用户都只能从这些根目录内创建任务；未配置时，仅管理员可以提交服务器本地仓库路径，避免普通远程用户探测或读取任意服务器仓库。
+
+由于任务验证会执行仓库的测试/构建入口，非管理员 Token 还必须显式包含 `"task_creator": true` 才能创建任务。不要把该权限授予不应拥有服务器代码执行能力的主体；当前版本的路径与 Tool 边界不能替代 OS/容器沙箱。
 
 ## Legacy AgentTeams 模式
 

@@ -5,6 +5,8 @@ import os
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,12 +53,15 @@ class SQLiteControlStore(
         self._setup()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def _setup(self) -> None:
         self._conn.executescript(
             """
             PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA busy_timeout=5000;
             CREATE TABLE IF NOT EXISTS task_projection (
               task_id TEXT PRIMARY KEY,
               run_id TEXT NOT NULL,
@@ -240,6 +245,22 @@ class SQLiteControlStore(
             )
         self._conn.commit()
 
+    @contextmanager
+    def _immediate_transaction(self):
+        """Serialize a read-check-write transaction across processes."""
+
+        with self._lock:
+            if self._conn.in_transaction:
+                raise RuntimeError("nested SQLite control transaction")
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+
     @staticmethod
     def _sanitize(value: Any) -> Any:
         return sanitize_event_value(value)
@@ -247,7 +268,7 @@ class SQLiteControlStore(
     def create_task(self, state: GraphState) -> None:
         state = validate_state(state)
         now = self.clock.now().isoformat()
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             self._conn.execute(
                 """INSERT INTO task_projection
                    (task_id, run_id, status, state_revision, checkpoint_revision, checkpoint_run_id, state_json, updated_at)
@@ -267,15 +288,29 @@ class SQLiteControlStore(
             )
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM task_projection WHERE task_id = ?", (task_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM task_projection WHERE task_id = ?", (task_id,)
+            ).fetchone()
         if row is None:
             return None
         result = dict(row)
         result["state"] = json.loads(result.pop("state_json"))
         return result
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute("SELECT * FROM task_projection ORDER BY updated_at DESC").fetchall()
+    def list_tasks(self, *, owner: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if owner is None:
+                rows = self._conn.execute(
+                    "SELECT p.* FROM task_projection p ORDER BY p.updated_at DESC"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT p.* FROM task_projection p
+                       JOIN task_owners o ON o.task_id=p.task_id
+                       WHERE o.subject=? ORDER BY p.updated_at DESC""",
+                    (owner,),
+                ).fetchall()
         result = []
         for row in rows:
             item = dict(row)
@@ -288,7 +323,7 @@ class SQLiteControlStore(
 
         if not subject:
             raise ValueError("subject must not be empty")
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             task = self._conn.execute(
                 "SELECT 1 FROM task_projection WHERE task_id=?", (task_id,)
             ).fetchone()
@@ -305,9 +340,10 @@ class SQLiteControlStore(
             )
 
     def task_owner(self, task_id: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT subject FROM task_owners WHERE task_id=?", (task_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT subject FROM task_owners WHERE task_id=?", (task_id,)
+            ).fetchone()
         return str(row["subject"]) if row else None
 
     def _next_sequence_tx(self, task_id: str, run_id: str) -> int:
@@ -437,7 +473,7 @@ class SQLiteControlStore(
         updated = validate_state(state)
         new_revision = expected_revision + 1
         updated["state_revision"] = new_revision
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             row = self._conn.execute(
                 "SELECT state_revision FROM task_projection WHERE task_id=?", (updated["task_id"],)
             ).fetchone()
@@ -461,7 +497,7 @@ class SQLiteControlStore(
         return validate_state(updated)
 
     def confirm_checkpoint(self, task_id: str, run_id: str, revision: int) -> None:
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             cursor = self._conn.execute(
                 "UPDATE task_projection SET checkpoint_revision=?, checkpoint_run_id=? WHERE task_id=? AND state_revision=?",
                 (revision, run_id, task_id, revision),
@@ -477,20 +513,69 @@ class SQLiteControlStore(
                 (task_id, run_id, revision),
             )
 
-    def reconcile(self, checkpoint_state: GraphState) -> bool:
+    def reconcile(
+        self,
+        checkpoint_state: GraphState,
+        *,
+        defer_if_newer_seconds: float = 0,
+    ) -> bool:
         """Repair an event/projection-ahead crash using the durable checkpoint."""
         checkpoint_state = validate_state(checkpoint_state)
-        current = self.get_task(checkpoint_state["task_id"])
-        if current is None:
-            self.create_task(checkpoint_state)
-            return True
-        if (
-            current["state_revision"] == checkpoint_state["state_revision"]
-            and current["checkpoint_revision"] == checkpoint_state["state_revision"]
-            and current["checkpoint_run_id"] == checkpoint_state["run_id"]
-        ):
-            return False
-        with self._lock, self._conn:
+        if defer_if_newer_seconds < 0:
+            raise ValueError("defer_if_newer_seconds must be non-negative")
+        with self._immediate_transaction():
+            row = self._conn.execute(
+                "SELECT * FROM task_projection WHERE task_id=?",
+                (checkpoint_state["task_id"],),
+            ).fetchone()
+            if row is None:
+                now = self.clock.now().isoformat()
+                self._conn.execute(
+                    """INSERT INTO task_projection
+                       (task_id, run_id, status, state_revision,
+                        checkpoint_revision, checkpoint_run_id, state_json,
+                        updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        checkpoint_state["task_id"],
+                        checkpoint_state["run_id"],
+                        checkpoint_state["status"],
+                        checkpoint_state["state_revision"],
+                        checkpoint_state["state_revision"],
+                        checkpoint_state["run_id"],
+                        json.dumps(checkpoint_state, ensure_ascii=False),
+                        now,
+                    ),
+                )
+                self._append_event_tx(
+                    checkpoint_state["task_id"],
+                    checkpoint_state["run_id"],
+                    "task_created",
+                    {"status": checkpoint_state["status"]},
+                    True,
+                    state_revision=checkpoint_state["state_revision"],
+                )
+                return True
+            current = dict(row)
+            current["state"] = json.loads(current.pop("state_json"))
+            if (
+                current["state_revision"] == checkpoint_state["state_revision"]
+                and current["checkpoint_revision"]
+                == checkpoint_state["state_revision"]
+                and current["checkpoint_run_id"] == checkpoint_state["run_id"]
+            ):
+                return False
+            if (
+                defer_if_newer_seconds
+                and int(current["state_revision"])
+                > checkpoint_state["state_revision"]
+            ):
+                updated_at = datetime.fromisoformat(str(current["updated_at"]))
+                age = (self.clock.now() - updated_at).total_seconds()
+                if age < defer_if_newer_seconds:
+                    raise StateConflictError(
+                        "task transition is awaiting checkpoint confirmation"
+                    )
             checkpoint_caught_up = (
                 current["state_revision"] == checkpoint_state["state_revision"]
                 and current["run_id"] == checkpoint_state["run_id"]
@@ -570,12 +655,14 @@ class SQLiteControlStore(
     ) -> ExecutionEvent:
         """Append a non-state event (for example a message) and enqueue it atomically."""
 
-        with self._lock, self._conn:
+        with self._immediate_transaction():
             task = self._conn.execute(
                 "SELECT run_id FROM task_projection WHERE task_id=?", (task_id,)
             ).fetchone()
             if task is None:
                 raise KeyError(task_id)
+            if str(task["run_id"]) != run_id:
+                raise StateConflictError("task run changed before event append")
             sequence = self._append_event_tx(
                 task_id,
                 run_id,
@@ -618,7 +705,8 @@ class SQLiteControlStore(
         if limit is not None:
             sql += " LIMIT ?"
             parameters.append(limit)
-        rows = self._conn.execute(sql, parameters).fetchall()
+        with self._lock:
+            rows = self._conn.execute(sql, parameters).fetchall()
         return [self._event_from_row(row) for row in rows]
 
     def events(
@@ -640,9 +728,10 @@ class SQLiteControlStore(
         ]
 
     def event(self, event_id: str) -> ExecutionEvent | None:
-        row = self._conn.execute(
-            "SELECT * FROM execution_events WHERE event_id=?", (event_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM execution_events WHERE event_id=?", (event_id,)
+            ).fetchone()
         return self._event_from_row(row) if row else None
 
     def trace(self, task_id: str, run_id: str | None = None) -> dict[str, Any]:
