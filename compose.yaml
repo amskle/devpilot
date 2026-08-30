@@ -1,0 +1,120 @@
+name: devpilot
+
+services:
+  volume-init:
+    image: busybox:1.37.0
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data"]
+    network_mode: none
+    restart: "no"
+    volumes:
+      - devpilot-data:/data
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: runtime-${DEVPILOT_TOOLCHAIN_PROFILE:-python}
+    init: true
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - devpilot
+      - api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "${DEVPILOT_API_WORKERS:-1}"
+    environment:
+      DEVPILOT_ENV: production
+      DEVPILOT_DATA_DIR: /data
+      DEVPILOT_REDIS_URL: redis://redis:6379/0
+      DEVPILOT_API_REPOSITORY_ROOTS: '["/repos"]'
+      DEVPILOT_API_TOKENS: "${DEVPILOT_API_TOKENS:?Set DEVPILOT_API_TOKENS in .env}"
+      DEVPILOT_MODEL_API_KEY: "${DEVPILOT_MODEL_API_KEY:?Set DEVPILOT_MODEL_API_KEY in .env}"
+      DEVPILOT_MODEL_BASE_URL: "${DEVPILOT_MODEL_BASE_URL:-}"
+      DEVPILOT_MODEL: "${DEVPILOT_MODEL:-gpt-5-mini}"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    volumes:
+      - devpilot-data:/data
+      - type: bind
+        source: "${DEVPILOT_REPOSITORY_ROOT_HOST:?Set DEVPILOT_REPOSITORY_ROOT_HOST in .env}"
+        target: /repos
+        read_only: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=3).read()
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    networks:
+      - edge
+      - backend
+
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${DEVPILOT_BIND_ADDRESS:-127.0.0.1}:${DEVPILOT_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+volumes:
+  devpilot-data:
+
+networks:
+  edge:
+  backend:
+    internal: true
+

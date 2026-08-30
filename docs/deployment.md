@@ -1,6 +1,136 @@
 # 部署说明
 
-> Phase 1 默认部署方式是本地 CLI + SQLite + 独立 Git worktree。AgentTeams 部分仅为 legacy 资产说明。
+> 当前推荐的图形化部署方式是 Docker Compose + Nginx；本地 CLI 继续适用于开发和离线管理。
+
+## Docker Compose 快速部署
+
+Compose 启动四个服务：一次性数据卷初始化、Redis、FastAPI 和承载 Vue 3 静态文件的
+Nginx。只有 Nginx 对宿主发布端口，浏览器通过同一 Origin 访问 REST 与 WebSocket，
+因此不需要额外配置 CORS。
+
+### 1. 准备配置
+
+Windows Docker Desktop：
+
+```powershell
+Copy-Item .env.docker.example .env
+notepad .env
+```
+
+Linux：
+
+```bash
+cp .env.docker.example .env
+${EDITOR:-vi} .env
+```
+
+至少修改以下配置：
+
+- `DEVPILOT_REPOSITORY_ROOT_HOST`：宿主机上存放目标 Git 仓库的共同根目录。Windows
+  使用 `C:/repos` 形式，Linux 可使用 `/srv/repos`。
+- `DEVPILOT_MODEL_API_KEY`、`DEVPILOT_MODEL_BASE_URL` 和 `DEVPILOT_MODEL`：模型连接信息。
+- `DEVPILOT_API_TOKENS`：完整 JSON 对象；生产模式下 Token 至少 32 字符。
+
+`.env` 已被 Git 忽略，但运行时环境变量仍可被拥有 Docker 管理权限的用户读取。因此
+该方式只适用于本地、可信内网和受控宿主机，不应把 Docker 管理权限授予非可信用户。
+
+### 2. 选择工具链
+
+默认轻量镜像：
+
+```dotenv
+DEVPILOT_TOOLCHAIN_PROFILE=python
+```
+
+该镜像包含 Python 3.13、pytest 和 Git。需要验证 JavaScript、Java、Go 或 Rust 仓库时改为：
+
+```dotenv
+DEVPILOT_TOOLCHAIN_PROFILE=full
+```
+
+完整镜像额外包含 Node.js 22、JDK 17、Maven、Gradle 8、Go 1.24 和 Rust/Cargo。
+镜像只提供工具，不会自动为目标仓库执行 `npm ci`、`pip install` 等依赖安装；Maven、
+Gradle、Go 和 Cargo 可按项目自身配置解析依赖，其他项目应预先提供可运行环境。
+
+### 3. 启动与访问
+
+```bash
+docker compose config
+docker compose up --build --wait -d
+docker compose ps
+```
+
+默认入口：
+
+- 控制台：<http://127.0.0.1:8080>
+- 健康检查：<http://127.0.0.1:8080/api/health>
+- Readiness：<http://127.0.0.1:8080/api/ready>
+- OpenAPI：<http://127.0.0.1:8080/docs>
+
+前端创建任务时使用容器路径 `/repos/<仓库目录>`。例如宿主仓库为
+`C:/repos/sample`，API 请求路径应为 `/repos/sample`。`/repos` 在 API 容器中是只读的；
+DevPilot 会将仓库 clone 到 `/data` 持久卷中的隔离 worktree。
+
+允许同一内网中的其他机器访问时，显式修改：
+
+```dotenv
+DEVPILOT_BIND_ADDRESS=0.0.0.0
+```
+
+第一版不在 Nginx 容器内终止 TLS。公网部署必须在外层负载均衡器或反向代理上配置
+HTTPS，并继续只向外暴露 Nginx。
+
+### 4. 宿主模型服务
+
+Docker Desktop 可通过 `host.docker.internal` 访问宿主服务：
+
+```dotenv
+DEVPILOT_MODEL_BASE_URL=http://host.docker.internal:9000/v1
+```
+
+Compose 已为 Linux 配置 `host-gateway` 映射，因此同一地址也可在现代 Docker Engine 上使用。
+
+### 5. 日志、更新与数据
+
+```bash
+docker compose logs -f api nginx redis
+docker compose restart api
+docker compose down
+docker compose pull
+docker compose up --build --wait -d
+```
+
+`docker compose down` 不删除 `devpilot-data`，API 重建后 SQLite、Artifact 和 worktree 会保留。
+升级前可以备份命名卷：
+
+```bash
+docker run --rm -v devpilot_devpilot-data:/data -v "$PWD:/backup" \
+  busybox:1.37.0 tar czf /backup/devpilot-data.tar.gz -C /data .
+```
+
+项目名或 Compose 工作目录改变时，先通过 `docker volume ls` 确认实际卷名。恢复必须在 API
+停止后进行。只有明确需要永久清空所有任务、事件、Artifact 和 worktree 时才执行：
+
+```bash
+docker compose down -v
+```
+
+### 6. 故障检查
+
+```bash
+docker compose ps
+docker compose logs --tail=200 api nginx redis
+docker compose exec api id
+docker compose exec api git -C /repos/<仓库> rev-parse --show-toplevel
+docker compose exec api python -m devpilot --help
+```
+
+Redis 不可用时 `/api/ready` 返回 503，票据和限流 fail closed；SQLite 中已经持久化的任务
+不会丢失，Redis 恢复后 outbox 会继续投递。
+
+Docker 容器降低了目标代码直接接触宿主系统的范围，但目标仓库测试仍与 API 进程共享
+容器环境、模型密钥和 `/data`。因此 Docker Compose 不是每任务安全沙箱，`admin` 或
+`task_creator` 只能授予可信主体。
 
 ## 本地开发模式
 

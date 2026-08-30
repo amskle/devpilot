@@ -182,7 +182,44 @@ npm run dev
 ### 可选基础设施
 
 - **Redis**：仅生产环境或多 Uvicorn Worker 部署必需；本地单 Worker 开发可不启用。
-- **Docker / AgentTeams / MCP**：只用于仓库保留的 Legacy 迁移资产，不属于当前默认执行链。
+- **Docker Compose**：用于当前 FastAPI、Vue 3、Nginx 和 Redis 的一键部署。
+- **AgentTeams / MCP**：只作为 Legacy 迁移资产保留，不属于当前默认执行链。
+
+### Docker Compose 快速部署
+
+当前前后端可以通过 Nginx、FastAPI 和 Redis 的 Compose 拓扑统一启动。默认只在
+`127.0.0.1:8080` 暴露 Nginx，API 和 Redis 不直接发布宿主端口。
+
+```powershell
+Copy-Item .env.docker.example .env
+# 编辑 .env：至少替换仓库根目录、模型 API Key 和长随机 API Token
+docker compose up --build --wait -d
+```
+
+Linux / macOS：
+
+```bash
+cp .env.docker.example .env
+# 编辑 .env 后启动
+docker compose up --build --wait -d
+```
+
+打开 <http://127.0.0.1:8080>，在控制台中输入 `.env` 配置的 API Token。创建任务时
+必须填写容器内路径，例如 `/repos/my-project`，不能填写宿主的
+`C:\repos\my-project`。宿主仓库根目录通过 `DEVPILOT_REPOSITORY_ROOT_HOST` 只读挂载到
+容器的 `/repos`。
+
+默认的 `DEVPILOT_TOOLCHAIN_PROFILE=python` 镜像只包含 Python、pytest 和 Git；将其改为
+`full` 后重新构建，会额外加入 Node.js、JDK、Maven、Gradle、Go 和 Rust。镜像不会自动
+安装目标仓库依赖，目标项目仍需具备可直接运行的测试环境或 wrapper。
+
+```bash
+docker compose logs -f api nginx redis
+docker compose down                 # 保留任务数据
+docker compose down -v              # 警告：永久删除任务数据卷
+```
+
+完整配置、安全边界、备份和升级方法见 [部署指南](docs/deployment.md)。
 
 ## 详细用法
 
