@@ -12,6 +12,7 @@ import type {
 const DEFAULT_BASE_URL = "/api";
 const TOKEN_KEY = "devpilot.access-token";
 const IDEMPOTENCY_PREFIX = "devpilot.idempotency.";
+export const AUTH_REQUIRED_EVENT = "devpilot:auth-required";
 
 export class ApiError extends Error {
   constructor(
@@ -100,6 +101,11 @@ function messageFromBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
+function notifyAuthenticationRequired(message: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT, { detail: { message } }));
+}
+
 export class ApiClient {
   readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -134,7 +140,9 @@ export class ApiClient {
       }
     }
     if (!response.ok) {
-      throw new ApiError(messageFromBody(body, `请求失败 (${response.status})`), response.status, body);
+      const message = messageFromBody(body, `请求失败 (${response.status})`);
+      if (response.status === 401) notifyAuthenticationRequired(message);
+      throw new ApiError(message, response.status, body);
     }
     return body as T;
   }

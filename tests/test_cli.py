@@ -26,10 +26,73 @@ def test_plan_history_command_accepts_task_id():
     assert args.task_id == "task"
 
 
-def test_api_refuses_public_bind_with_default_development_token(monkeypatch):
+def test_api_refuses_public_bind_with_default_development_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DEVPILOT_API_TOKENS", raising=False)
     with pytest.raises(SystemExit, match="DEVPILOT_API_TOKENS"):
         main(["api", "--host", "0.0.0.0"])
+
+
+def test_cli_accepts_an_explicit_env_file():
+    args = build_parser().parse_args(
+        ["--env-file", "settings.env", "task", "list"]
+    )
+    assert args.env_file == "settings.env"
+
+
+def test_cli_rejects_a_missing_explicit_env_file(tmp_path):
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--env-file",
+                str(tmp_path / "missing.env"),
+                "task",
+                "list",
+            ]
+        )
+
+
+def test_cli_loads_model_settings_from_default_env_file(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / ".env").write_text(
+        "DEVPILOT_MODEL_API_KEY=test-key\n"
+        "DEVPILOT_MODEL_BASE_URL=https://example.invalid/v1\n"
+        "DEVPILOT_MODEL=file-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "DEVPILOT_MODEL_API_KEY",
+        "DEVPILOT_MODEL_BASE_URL",
+        "DEVPILOT_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    captured = {}
+
+    class FakeControl:
+        @staticmethod
+        def list_tasks():
+            return []
+
+    class FakeService:
+        control = FakeControl()
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("devpilot.cli.TaskService", FakeService)
+
+    main(["task", "list"])
+
+    assert captured["model"] == "file-model"
+    assert captured["base_url"] == "https://example.invalid/v1"
+    assert capsys.readouterr().out.strip() == "[]"
 
 
 def test_phase7_replay_commands_parse_targets():

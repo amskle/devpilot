@@ -103,12 +103,11 @@ python -m venv .venv
 ### 2. 配置模型
 
 ```powershell
-$env:DEVPILOT_MODEL_API_KEY = "your-api-key"
-$env:DEVPILOT_MODEL_BASE_URL = "https://your-compatible-endpoint/v1"
-$env:DEVPILOT_MODEL = "your-model"
+Copy-Item .env.example .env
+notepad .env
 ```
 
-`DEVPILOT_MODEL_BASE_URL` 可省略，此时使用 OpenAI SDK 的默认服务地址。API Key 只从环境变量读取，不会写入 GraphState、Event 或 Artifact。
+CLI 启动时会自动读取当前目录 `.env` 中的 `DEVPILOT_*` 配置；已有的系统环境变量优先，不会被文件覆盖。也可在子命令前通过 `--env-file C:\path\to\settings.env` 指定其他文件。`DEVPILOT_MODEL_BASE_URL` 可省略，此时使用 OpenAI SDK 的默认服务地址。`.env` 已被 Git 忽略，API Key 不会写入 GraphState、Event 或 Artifact。
 
 ### 3. 创建第一个任务
 

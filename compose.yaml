@@ -93,6 +93,7 @@ services:
       dockerfile: docker/nginx/Dockerfile
       args:
         VITE_API_BASE_URL: /api
+        VITE_REPOSITORY_PATH_PLACEHOLDER: /repos/example
     restart: unless-stopped
     depends_on:
       api:
@@ -117,4 +118,3 @@ networks:
   edge:
   backend:
     internal: true
-

@@ -96,9 +96,7 @@ class TaskRuntimeCore:
             state["task_id"], state["run_id"], {"sha256": snapshot_ref}
         )
         catalog, selected_model = PricingCatalog.from_snapshot(json.loads(raw))
-        selected_catalog = (
-            catalog if state["execution_budget"].get("max_cost") is not None else None
-        )
+        selected_catalog = catalog if (selected_model or self.model_name) in catalog.entries else None
         return selected_catalog, selected_model or self.model_name
 
     def _agents_for_model(self, model_name: str) -> AgentRunner:
@@ -342,7 +340,7 @@ class TaskRuntimeCore:
             request=normalized_request,
             revision=normalized_revision,
             pricing_catalog=(
-                catalog if selected_budget.max_cost is not None else None
+                catalog if selected_model in catalog.entries else None
             ),
             model_name=selected_model,
             prompt_overrides=prompt_overrides,

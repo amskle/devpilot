@@ -24,6 +24,20 @@ def test_failing_command():
     assert result["data"]["exit_code"] == 3
 
 
+def test_utf8_output_is_decoded_independently_of_windows_locale():
+    result = run(
+        {
+            "command": 'python -c "print(\'测试通过 ✓\')"',
+            "cwd": tempfile.gettempdir(),
+            "timeout": 30,
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["passed"] is True
+    assert "测试通过 ✓" in result["data"]["stdout"]
+
+
 def test_timeout_output_is_always_json_safe_text():
     result = run(
         {

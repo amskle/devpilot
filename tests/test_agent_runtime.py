@@ -56,20 +56,51 @@ def test_scripted_fake_repairs_invalid_schema_once(tmp_path):
     assert result.result.status == "ok"
     assert gateway.call_count("planning") == 2
     assert gateway.calls[-1]["tools"] == []
+    system_prompt = gateway.calls[0]["messages"][0]["content"]
+    repair_prompt = gateway.calls[-1]["messages"][-1]["content"]
+    assert '"acceptance_criteria"' in system_prompt
+    assert "Validation error:" in repair_prompt
+    assert '"required"' in repair_prompt
     gateway.assert_consumed()
 
 
-def test_tool_round_limit_stops_before_execution(tmp_path):
+def test_tool_round_limit_requests_one_tool_free_final_response(tmp_path):
     gateway = ScriptedFakeModelGateway(
-        {"planning": [ModelResponse.tools([{"name": "project-context", "arguments": {"workspace_id": "ws-test"}}])]}
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [
+                        {
+                            "name": "project-context",
+                            "arguments": {"workspace_id": "ws-test"},
+                        }
+                    ]
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "enough evidence",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                        "risks": [],
+                    }
+                ),
+            ]
+        }
     )
     runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
     from devpilot.domain.models import ExecutionBudget
-    with pytest.raises(ModelGatewayError, match="TOOL_ROUND_BUDGET_EXHAUSTED"):
-        runner.invoke(
-            _spec(allowed_tools=("project-context",), max_tool_rounds=0), node_context={}, output_model=PlanDraft,
-            workspace=_workspace(tmp_path), execution_budget=ExecutionBudget().to_state_dict(),
-        )
+    result = runner.invoke(
+        _spec(allowed_tools=("project-context",), max_tool_rounds=0),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    assert result.result.status == "ok"
+    assert result.execution_budget["tool_calls_used"] == 0
+    assert gateway.calls[-1]["tools"] == []
+    assert "tool-round limit" in gateway.calls[-1]["messages"][-1]["content"]
 
 
 def test_unauthorized_tool_is_rejected_before_handler(tmp_path):

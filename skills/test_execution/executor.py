@@ -70,12 +70,17 @@ def run(inputs: dict) -> dict:
         else _detect_command(cwd)
     )
     timeout = int(inputs.get("timeout", 120))
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONUTF8", "1")
     try:
         proc = subprocess.run(
             command,
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
             timeout=timeout,
         )
         return {

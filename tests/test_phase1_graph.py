@@ -1,6 +1,7 @@
 import json
 import subprocess
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from devpilot.agents.model_gateway import ModelResponse, ScriptedFakeModelGateway
@@ -70,6 +71,94 @@ def test_graph_interrupts_and_resumes_bound_approval(tmp_path):
         assert final["patch_proposal"]["status"] == "VERIFIED"
         assert (repo / "app.py").read_text(encoding="utf-8") == "value = 1\n"
         assert final["workspace_ref"]["current_revision"] != final["workspace_ref"]["baseline_revision"]
+    finally:
+        service.close()
+
+
+def test_patch_generation_retries_once_with_exact_authorized_source(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {
+                        "summary": "plan",
+                        "tasks": [],
+                        "acceptance_criteria": ["change value"],
+                        "risks": [],
+                    }
+                )
+            ],
+            "diagnosis": [
+                ModelResponse.final(
+                    {
+                        "outcome": "ISSUE_FOUND",
+                        "summary": "value is stale",
+                        "issues": [{"target_file": "app.py", "issue": "stale-value"}],
+                    }
+                )
+            ],
+            "patch_generation": [
+                ModelResponse.final(
+                    {
+                        "summary": "first attempt",
+                        "operations": [
+                            {
+                                "target_file": "app.py",
+                                "issues": ["stale-value"],
+                                "replacements": [
+                                    {"old": "value = 0", "new": "value = 2"}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "corrected attempt",
+                        "operations": [
+                            {
+                                "target_file": "app.py",
+                                "issues": ["stale-value"],
+                                "replacements": [
+                                    {"old": "value = 1", "new": "value = 2"}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+            ],
+            "review": [
+                ModelResponse.final(
+                    {
+                        "summary": "verified",
+                        "outcome": "COMPLETED",
+                        "lessons": [],
+                    }
+                )
+            ],
+        }
+    )
+    service = TaskService(data_dir=tmp_path / "data", gateway=gateway)
+    try:
+        final = service.create_task(repo, "仅修改 app.py：将 value 改为 2")
+        assert final["status"] == TaskStatus.COMPLETED.value
+        assert gateway.call_count("patch_generation") == 2
+        patch_calls = [
+            call for call in gateway.calls if call["agent_id"] == "patch_generation"
+        ]
+        first_context = json.loads(patch_calls[0]["messages"][1]["content"])
+        second_context = json.loads(patch_calls[1]["messages"][1]["content"])
+        assert first_context["authorized_source_excerpts"]["app.py"] == "value = 1\n"
+        assert second_context["runtime_correction"]["code"] == (
+            "REPLACEMENT_TARGET_NOT_FOUND"
+        )
+        assert any(
+            event["event_type"] == "patch_proposed"
+            and event["payload"]["repair_trigger"]["code"]
+            == "REPLACEMENT_TARGET_NOT_FOUND"
+            for event in service.control.events(final["task_id"])
+        )
     finally:
         service.close()
 
@@ -302,6 +391,33 @@ def test_pricing_snapshot_is_frozen_and_actual_cost_is_settled(tmp_path):
         )
         assert final["status"] == TaskStatus.COMPLETED.value
         assert final["execution_budget"]["cost_used"] == "0.0120"
+    finally:
+        service.close()
+
+
+def test_pricing_is_recorded_without_a_cost_limit(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    data = tmp_path / "data"
+    pricing = data / "pricing"
+    pricing.mkdir(parents=True)
+    (pricing / "catalog.json").write_text(
+        json.dumps(
+            {
+                "models": {
+                    "priced": {
+                        "prompt_per_million": "1000",
+                        "completion_per_million": "2000",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = TaskService(data_dir=data, gateway=no_action_scenario(), model="priced")
+    try:
+        final = service.create_task(repo, "inspect")
+        assert final["status"] == TaskStatus.COMPLETED_NO_CHANGES.value
+        assert Decimal(final["execution_budget"]["cost_used"]) > 0
     finally:
         service.close()
 

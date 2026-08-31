@@ -32,8 +32,10 @@ AGENT_SPECS = {
         agent_id="patch_generation",
         role="Patch Generation",
         instructions=(
-            "Propose minimal file replacements grounded in exact source evidence from Diagnosis. Never invent declarations "
-            "from identifier names, never apply changes, and never target paths outside the workspace."
+            "Propose minimal file replacements grounded in exact source evidence from Diagnosis. For every replacement, "
+            "copy Replacement.old byte-for-byte from authorized_source_excerpts, including type annotations and whitespace; "
+            "never reconstruct old text from memory. Never invent declarations from identifier names, never apply changes, "
+            "and never target paths outside the workspace."
         ),
         allowed_tools=("patch-generate",),
         output_schema="PatchDraft",

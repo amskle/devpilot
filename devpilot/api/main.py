@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -47,7 +48,10 @@ def create_app(
         and multiprocessing.parent_process() is not None
     ):
         raise RuntimeError("worker processes require DEVPILOT_REDIS_URL")
-    task_service = service or TaskService()
+    task_service = service or TaskService(
+        model=os.environ.get("DEVPILOT_MODEL") or "gpt-5-mini",
+        base_url=os.environ.get("DEVPILOT_MODEL_BASE_URL") or None,
+    )
     owns_service = service is None
     owns_redis = False
     relay: OutboxRelay | None = None

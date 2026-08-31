@@ -21,7 +21,7 @@ python -m devpilot task status --task-id TASK_ID
 python -m devpilot admin reconcile --task-id TASK_ID
 ```
 
-真实模型 smoke 需要显式设置 `DEVPILOT_MODEL_API_KEY`、`DEVPILOT_MODEL_BASE_URL` 和 `DEVPILOT_MODEL`，CI 只使用 ScriptedFakeModelGateway。
+真实模型 smoke 从项目根目录 `.env` 自动加载 `DEVPILOT_MODEL_API_KEY`、`DEVPILOT_MODEL_BASE_URL` 和 `DEVPILOT_MODEL`；系统环境变量具有更高优先级。CI 只使用 ScriptedFakeModelGateway。
 
 ## 3. Phase 2 重规划
 

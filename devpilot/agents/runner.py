@@ -39,13 +39,22 @@ class AgentRunner:
         model_profile: ModelProfile | None = None,
         pricing_catalog: PricingCatalog | None = None,
     ) -> AgentInvocation:
+        output_schema = json.dumps(
+            output_model.model_json_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": (
                     f"{spec.instructions}\n\n"
                     "Trusted runtime rule: workspace_id is bound by DevPilot. "
-                    "Do not invent, copy, or include workspace_id in tool arguments."
+                    "Do not invent, copy, or include workspace_id in tool arguments.\n\n"
+                    "Output contract: after any tool use, return exactly one JSON object "
+                    "matching the following JSON Schema. Use the schema field names exactly, "
+                    "do not add prose or alternate field names, and do not call more tools once "
+                    f"you have enough evidence. Schema: {output_schema}"
                 ),
             },
             {"role": "user", "content": json.dumps(node_context, ensure_ascii=False)},
@@ -55,7 +64,8 @@ class AgentRunner:
         total_prompt = 0
         total_completion = 0
         tool_rounds = 0
-        repaired = False
+        tools_disabled = False
+        schema_repaired = False
         estimated_tokens = 0
         estimated_cost = "0"
         if pricing_catalog is not None and model_profile is not None:
@@ -79,7 +89,7 @@ class AgentRunner:
                     messages=messages,
                     tools=(
                         []
-                        if repaired
+                        if tools_disabled
                         else self.tools.registry.schemas(
                             spec.allowed_tools,
                             expose_runtime_fields=False,
@@ -111,14 +121,23 @@ class AgentRunner:
             )
 
             if response.tool_calls:
-                if repaired:
-                    error = ModelGatewayError("repair response attempted a tool call")
+                if tools_disabled:
+                    error = ModelGatewayError("final response attempted a tool call")
                     error.execution_budget = budget
                     raise error
                 if tool_rounds >= spec.max_tool_rounds:
-                    error = ModelGatewayError("TOOL_ROUND_BUDGET_EXHAUSTED")
-                    error.execution_budget = budget
-                    raise error
+                    tools_disabled = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The bounded tool-round limit has been reached. Do not call "
+                                "tools again. Using the evidence already returned, provide only "
+                                f"the final JSON object matching this schema: {output_schema}"
+                            ),
+                        }
+                    )
+                    continue
                 tool_rounds += 1
                 messages.append(
                     {
@@ -166,7 +185,7 @@ class AgentRunner:
                 raw = json.loads(response.content or "")
                 structured = output_model.model_validate(raw)
             except (json.JSONDecodeError, ValidationError) as exc:
-                if repaired:
+                if schema_repaired:
                     return AgentInvocation(
                         AgentResult(
                             status="error",
@@ -178,11 +197,16 @@ class AgentRunner:
                         ),
                         budget,
                     )
-                repaired = True
+                schema_repaired = True
+                tools_disabled = True
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"Return only valid JSON for schema {output_model.__name__}. Previous output was invalid.",
+                        "content": (
+                            "Your previous response failed validation. Return only one valid JSON "
+                            f"object for {output_model.__name__}; do not call tools or add prose. "
+                            f"Validation error: {exc}. JSON Schema: {output_schema}"
+                        ),
                     }
                 )
                 continue

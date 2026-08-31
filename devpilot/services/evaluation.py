@@ -4,7 +4,7 @@ import time
 import uuid
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from devpilot.agents.definitions import AGENT_SPECS
 from devpilot.domain.models import TaskStatus
@@ -123,6 +123,8 @@ class EvaluationCommands:
             components.append(float(approval_match))
 
         budget = state["execution_budget"]
+        latest_failure = state.get("latest_failure") or {}
+        pricing_catalog, _ = self._pricing_context(state)
         return EvaluationCaseResult(
             case_id=case.case_id,
             task_id=state["task_id"],
@@ -139,6 +141,17 @@ class EvaluationCommands:
             prompt_tokens=int(budget.get("prompt_tokens_used", 0)),
             completion_tokens=int(budget.get("completion_tokens_used", 0)),
             cost=str(budget.get("cost_used", "0.0000")),
+            cost_available=pricing_catalog is not None,
+            failure_code=(
+                str(latest_failure.get("error_code"))
+                if latest_failure.get("error_code")
+                else None
+            ),
+            failure_summary=(
+                str(latest_failure.get("summary"))[:2_000]
+                if latest_failure.get("summary")
+                else None
+            ),
         )
 
     def run_evaluation(
@@ -148,6 +161,8 @@ class EvaluationCommands:
         model: str | None = None,
         prompt_version: str = "default",
         prompt_overrides: dict[str, str] | None = None,
+        progress_callback: Callable[[int, int, EvaluationCaseResult], None]
+        | None = None,
     ) -> dict[str, Any]:
         parsed = (
             dataset
@@ -170,14 +185,16 @@ class EvaluationCommands:
             for agent_id, spec in AGENT_SPECS.items()
         }
         selected_model = model or self.model_name
-        case_results = [
-            self._evaluate_case(
+        case_results: list[EvaluationCaseResult] = []
+        for index, case in enumerate(parsed.cases, start=1):
+            result = self._evaluate_case(
                 case,
                 model=model,
                 prompt_overrides=normalized_overrides,
             )
-            for case in parsed.cases
-        ]
+            case_results.append(result)
+            if progress_callback is not None:
+                progress_callback(index, len(parsed.cases), result)
         completed = [result for result in case_results if result.error is None]
         verification_values = [
             float(result.verification_match)
@@ -216,6 +233,8 @@ class EvaluationCommands:
                 result.completion_tokens for result in case_results
             ),
             total_cost=f"{total_cost:.4f}",
+            cost_available=bool(completed)
+            and all(result.cost_available for result in completed),
         )
         dataset_dict = parsed.to_state_dict()
         report = EvaluationReport(

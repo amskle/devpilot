@@ -34,6 +34,19 @@ ${EDITOR:-vi} .env
 `.env` 已被 Git 忽略，但运行时环境变量仍可被拥有 Docker 管理权限的用户读取。因此
 该方式只适用于本地、可信内网和受控宿主机，不应把 Docker 管理权限授予非可信用户。
 
+可以在 PowerShell 中生成 32 字节随机 Token，再将输出填入 JSON 对象的键：
+
+```powershell
+$bytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+[Convert]::ToHexString($bytes).ToLowerInvariant()
+```
+
+例如（仅展示结构，不要使用示例值）：
+
+```dotenv
+DEVPILOT_API_TOKENS={"将随机Token填在这里":{"subject":"local-operator","admin":true}}
+```
+
 ### 2. 选择工具链
 
 默认轻量镜像：
@@ -66,6 +79,16 @@ docker compose ps
 - 健康检查：<http://127.0.0.1:8080/api/health>
 - Readiness：<http://127.0.0.1:8080/api/ready>
 - OpenAPI：<http://127.0.0.1:8080/docs>
+
+首次打开控制台时，页面会自动展开“访问凭证”。复制
+`DEVPILOT_API_TOKENS` JSON 对象最外层的 Token 键并保存；不要粘贴整段 JSON，也不要粘贴
+`DEVPILOT_MODEL_API_KEY`。凭证只保存在当前浏览器会话中，关闭标签页后需要重新输入。
+出现 `Bearer token required` 表示尚未保存凭证，出现 `Invalid bearer token` 表示输入值与
+API 容器中的 Token 不一致。修改 `.env` 后需要执行以下命令重建 API 容器：
+
+```bash
+docker compose up --build --force-recreate --wait -d api nginx
+```
 
 前端创建任务时使用容器路径 `/repos/<仓库目录>`。例如宿主仓库为
 `C:/repos/sample`，API 请求路径应为 `/repos/sample`。`/repos` 在 API 容器中是只读的；
@@ -138,9 +161,8 @@ Docker 容器降低了目标代码直接接触宿主系统的范围，但目标�
 cd A:\agent\devpilot-infra
 python -m pip install -r requirements.lock
 python -m pip install --no-deps -e .
-$env:DEVPILOT_MODEL_API_KEY = "..."
-$env:DEVPILOT_MODEL_BASE_URL = "https://compatible-endpoint/v1"
-$env:DEVPILOT_MODEL = "model-name"
+Copy-Item .env.example .env
+# 编辑 .env 中的模型 API Key、Base URL 和模型名称
 python -m devpilot task create --repo C:\path\to\clean-repo --request "修复失败测试"
 ```
 

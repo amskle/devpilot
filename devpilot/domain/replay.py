@@ -116,7 +116,10 @@ class EvaluationCaseResult(StrictModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     cost: str
+    cost_available: bool = False
     error: str | None = None
+    failure_code: str | None = None
+    failure_summary: str | None = None
 
 
 class EvaluationMetrics(StrictModel):
@@ -131,6 +134,7 @@ class EvaluationMetrics(StrictModel):
     total_prompt_tokens: int = Field(ge=0)
     total_completion_tokens: int = Field(ge=0)
     total_cost: str
+    cost_available: bool = False
 
 
 class EvaluationReport(StrictModel):

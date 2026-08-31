@@ -10,12 +10,29 @@ from typing import Any
 
 import yaml
 
-from devpilot.domain.replay import EvaluationDataset
+from devpilot.domain.replay import EvaluationCaseResult, EvaluationDataset
+from devpilot.env import load_devpilot_env
 from devpilot.service import TaskService
 
 
 def _print_state(state: dict[str, Any]) -> None:
     print(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _print_evaluation_progress(
+    index: int,
+    total: int,
+    result: EvaluationCaseResult,
+) -> None:
+    status = result.actual_status or "EVALUATION_ERROR"
+    detail = result.failure_code or result.error
+    suffix = f" failure={detail}" if detail else ""
+    print(
+        f"[eval {index}/{total}] {result.case_id} status={status} "
+        f"duration={result.duration_seconds:.1f}s{suffix}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _service(args: argparse.Namespace) -> TaskService:
@@ -29,6 +46,11 @@ def _service(args: argparse.Namespace) -> TaskService:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="devpilot")
     parser.add_argument("--data-dir", default=None)
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        help="load DEVPILOT_* settings from this file (default: .env)",
+    )
     groups = parser.add_subparsers(dest="group", required=True)
     api = groups.add_parser("api", help="run the Phase 6 FastAPI control plane")
     api.add_argument("--host", default="127.0.0.1")
@@ -144,7 +166,15 @@ def _load_mapping(path: Path) -> dict[str, str]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        load_devpilot_env(
+            args.env_file,
+            required=args.env_file != ".env",
+        )
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     if args.group == "api":
         if args.workers < 1:
             raise SystemExit("--workers must be positive")
@@ -215,7 +245,16 @@ def main(argv: list[str] | None = None) -> None:
                         if args.prompt_overrides
                         else None
                     ),
+                    progress_callback=_print_evaluation_progress,
                 )
+                if not value["metrics"]["cost_available"]:
+                    print(
+                        "warning: model pricing is unavailable; total_cost is not a "
+                        "usable metric. Configure pricing/catalog.json in the DevPilot "
+                        "data directory with this model's provider rates.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             elif args.command == "show":
                 value = service.evaluation_report(args.evaluation_id)
             elif args.command == "list":

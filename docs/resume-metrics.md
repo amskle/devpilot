@@ -71,12 +71,43 @@ cases:
 ### 2. 运行评测
 
 ```powershell
-$env:DEVPILOT_MODEL_API_KEY = "..."
-$env:DEVPILOT_MODEL = "候选模型名称"
+Copy-Item .env.example .env
+notepad .env
+```
 
+CLI 会自动从项目根目录 `.env` 加载模型名称、Base URL 与 API Key，无需在每个 PowerShell 会话中临时设置。
+
+先从实际模型供应商的控制台或账单确认每百万 Token 的输入、输出单价，并写入本机价格目录。模型名必须与 `DEVPILOT_MODEL` 完全一致；不要把未知价格填成 `0`：
+
+```powershell
+$modelName = "deepseek-v4-flash-0731"
+$promptPrice = Read-Host "普通输入价格（每百万 Token，USD）"
+$completionPrice = Read-Host "输出价格（每百万 Token，USD）"
+$pricingDir = Join-Path $env:USERPROFILE ".devpilot\pricing"
+New-Item $pricingDir -ItemType Directory -Force | Out-Null
+$models = @{}
+$models[$modelName] = @{
+  prompt_per_million = [string]$promptPrice
+  completion_per_million = [string]$completionPrice
+}
+@{ models = $models } |
+  ConvertTo-Json -Depth 4 |
+  Set-Content (Join-Path $pricingDir "catalog.json") -Encoding utf8
+```
+
+先运行覆盖 5 类行为的冒烟集。CLI 会在每个 Case 完成后向控制台输出进度；最终 JSON 仍可单独保存：
+
+```powershell
 .\.venv\Scripts\python -m devpilot eval run `
-  --dataset .\evaluation\resume-evaluation.yaml `
-  --model $env:DEVPILOT_MODEL
+  --dataset .\resume-evaluation-smoke.yaml |
+  Tee-Object .\out\evaluation\smoke.json
+```
+
+冒烟集全部进入预期状态后，再运行完整数据集：
+
+```powershell
+.\.venv\Scripts\python -m devpilot eval run `
+  --dataset .\resume-evaluation.yaml
 ```
 
 至少重复运行 3 次。记录每次报告 ID，然后计算均值与标准差，避免把单次随机结果当作稳定结论。应收集：
@@ -87,6 +118,8 @@ $env:DEVPILOT_MODEL = "候选模型名称"
 - 每 Case 平均 Prompt/Completion Token；
 - 每 Case 平均费用和耗时；
 - 错误 Case 数与错误原因分布。
+
+只有报告中的 `metrics.cost_available` 为 `true` 时，`total_cost` 才能作为费用指标；为 `false` 表示缺少该模型价格，而不是模型免费。
 
 对比模型或 Prompt 时必须使用相同的 `dataset_digest`：
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -31,11 +32,70 @@ from devpilot.domain.models import (
 from devpilot.domain.plans import build_plan_document, create_replan_request, plan_reference
 from devpilot.domain.progress import evaluate_progress_signals
 from devpilot.domain.state import GraphState, replace_progress_window, validate_state
+from devpilot.errors import ToolExecutionError
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore
 from devpilot.services.pricing import PricingCatalog
 from devpilot.tools.executor import ToolExecutor
 from devpilot.workspace import WorkspaceManager
 from devpilot.orchestration.topology import compile_graph
+
+
+_SOURCE_PATH_PATTERN = re.compile(
+    r"(?:[A-Za-z]:)?[A-Za-z0-9_./\\-]+\."
+    r"(?:py|pyi|js|jsx|ts|tsx|java|go|rs|c|cc|cpp|h|hpp|cs|rb|php)\b",
+    re.IGNORECASE,
+)
+_MAX_SOURCE_EVIDENCE_CHARS = 48_000
+_MAX_SOURCE_EVIDENCE_PER_FILE = 16_000
+
+
+def _nested_strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _nested_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _nested_strings(item)
+
+
+def _authorized_source_excerpts(
+    workspace: WorkspaceRef,
+    request: str,
+    diagnosis: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Read bounded, path-authorized source evidence named by the task or diagnosis."""
+
+    root = Path(workspace.worktree_ref).resolve()
+    candidates: set[str] = set()
+    for value in (request, *tuple(_nested_strings(diagnosis or {}))):
+        candidates.update(match.group(0) for match in _SOURCE_PATH_PATTERN.finditer(value))
+
+    excerpts: dict[str, str] = {}
+    remaining = _MAX_SOURCE_EVIDENCE_CHARS
+    for candidate in sorted(candidates):
+        raw_path = Path(candidate.replace("\\", "/"))
+        resolved = (
+            raw_path.resolve()
+            if raw_path.is_absolute()
+            else (root / raw_path).resolve()
+        )
+        if resolved != root and root not in resolved.parents:
+            continue
+        if not resolved.is_file() or resolved.is_symlink():
+            continue
+        relative = resolved.relative_to(root).as_posix()
+        limit = min(remaining, _MAX_SOURCE_EVIDENCE_PER_FILE)
+        if limit <= 0:
+            break
+        try:
+            content = resolved.read_text(encoding="utf-8", errors="replace")[:limit]
+        except OSError:
+            continue
+        excerpts[relative] = content
+        remaining -= len(content)
+    return excerpts
 
 
 @dataclass
@@ -432,53 +492,108 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         )
 
     def patch_generation(state: GraphState) -> GraphState:
-        invocation = runtime.agents.invoke(
-            _agent_spec(runtime, "patch_generation"),
-            node_context={
-                "request": runtime.request,
-                "plan": _read_json(runtime, state, state["active_plan_ref"]),
-                "diagnosis": state["diagnosis"],
-                "baseline_verification": (
-                    state["verification"]
-                    if (state["verification"] or {}).get("phase") == "baseline"
-                    else None
-                ),
-            },
-            output_model=OUTPUT_MODELS["PatchDraft"],
-            workspace=_workspace(state),
-            execution_budget=state["execution_budget"],
-            model_profile=runtime.model_profile,
-            pricing_catalog=runtime.pricing_catalog,
-        )
-        if invocation.result.status != "ok":
-            _raise_agent_error(invocation)
         workspace = _workspace(state)
-        budget = invocation.execution_budget
-        diffs: list[str] = []
-        files: list[str] = []
-        tool_operations: list[dict[str, Any]] = []
-        for index, operation in enumerate(invocation.result.structured_output["operations"]):
-            result = runtime.tools.execute(
-                "patch-generate",
-                {
-                    "workspace_id": workspace.workspace_id,
-                    "target_file": operation["target_file"],
-                    "replacements": operation["replacements"],
-                },
+        source_excerpts = _authorized_source_excerpts(
+            workspace,
+            runtime.request,
+            state["diagnosis"],
+        )
+        base_context = {
+            "request": runtime.request,
+            "plan": _read_json(runtime, state, state["active_plan_ref"]),
+            "diagnosis": state["diagnosis"],
+            "baseline_verification": (
+                state["verification"]
+                if (state["verification"] or {}).get("phase") == "baseline"
+                else None
+            ),
+            "authorized_source_excerpts": source_excerpts,
+        }
+
+        def invoke_patch_agent(
+            execution_budget: dict[str, Any],
+            repair_context: dict[str, Any] | None = None,
+        ):
+            node_context = dict(base_context)
+            if repair_context is not None:
+                node_context["runtime_correction"] = repair_context
+            candidate = runtime.agents.invoke(
+                _agent_spec(runtime, "patch_generation"),
+                node_context=node_context,
+                output_model=OUTPUT_MODELS["PatchDraft"],
                 workspace=workspace,
-                allowed_tools=("patch-generate",),
-                agent_id="patch_generation",
-                operation_id=f"patch:{state['run_id']}:{state['state_revision']}:{index}",
-                execution_budget=budget,
+                execution_budget=execution_budget,
+                model_profile=runtime.model_profile,
+                pricing_catalog=runtime.pricing_catalog,
             )
-            budget = result.execution_budget
-            tool_operations.append(
-                {"operation_id": result.operation_id, "attempts": result.attempts}
+            if candidate.result.status != "ok":
+                _raise_agent_error(candidate)
+            return candidate
+
+        def materialize_patch(candidate, attempt: int):
+            budget = candidate.execution_budget
+            diffs: list[str] = []
+            files: list[str] = []
+            operations: list[dict[str, Any]] = []
+            for index, operation in enumerate(
+                candidate.result.structured_output["operations"]
+            ):
+                result = runtime.tools.execute(
+                    "patch-generate",
+                    {
+                        "workspace_id": workspace.workspace_id,
+                        "target_file": operation["target_file"],
+                        "replacements": operation["replacements"],
+                    },
+                    workspace=workspace,
+                    allowed_tools=("patch-generate",),
+                    agent_id="patch_generation",
+                    operation_id=(
+                        f"patch:{state['run_id']}:{state['state_revision']}:"
+                        f"{attempt}:{index}"
+                    ),
+                    execution_budget=budget,
+                )
+                budget = result.execution_budget
+                operations.append(
+                    {
+                        "operation_id": result.operation_id,
+                        "attempts": result.attempts,
+                    }
+                )
+                if result.output["diff"]:
+                    diffs.append(result.output["diff"])
+                    files.append(operation["target_file"])
+            return "".join(diffs), files, operations, budget
+
+        invocations = [invoke_patch_agent(state["execution_budget"])]
+        repair_trigger: dict[str, Any] | None = None
+        try:
+            patch, files, tool_operations, budget = materialize_patch(
+                invocations[-1], 0
             )
-            if result.output["diff"]:
-                diffs.append(result.output["diff"])
-                files.append(operation["target_file"])
-        patch = "".join(diffs)
+        except ToolExecutionError as exc:
+            if exc.code != "REPLACEMENT_TARGET_NOT_FOUND":
+                raise
+            repair_trigger = {
+                "code": exc.code,
+                "message": str(exc),
+                "instruction": (
+                    "The proposed Replacement.old was not found. Re-read "
+                    "authorized_source_excerpts and copy the exact current source text."
+                ),
+                "rejected_patch": invocations[-1].result.structured_output,
+            }
+            retry_budget = getattr(
+                exc,
+                "execution_budget",
+                invocations[-1].execution_budget,
+            )
+            invocations.append(invoke_patch_agent(retry_budget, repair_trigger))
+            patch, files, tool_operations, budget = materialize_patch(
+                invocations[-1], 1
+            )
+
         patch_ref = runtime.artifacts.put_text(state["task_id"], state["run_id"], "patch", patch)
         proposal = PatchProposal(
             patch_id=f"patch_{uuid.uuid4().hex[:16]}",
@@ -486,7 +601,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             patch_hash=hashlib.sha256(patch.encode()).hexdigest(),
             base_revision=workspace.current_revision,
             changed_files=files,
-            summary=invocation.result.structured_output["summary"],
+            summary=invocations[-1].result.structured_output["summary"],
         )
         return _merge_transition(
             runtime,
@@ -499,10 +614,24 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 "patch_id": proposal.patch_id,
                 "changed_files": files,
                 "patch_ref": proposal.patch_ref,
-                "agent_summary": invocation.result.summary,
-                "agent_tool_call_refs": invocation.result.tool_call_refs,
+                "agent_summary": invocations[-1].result.summary,
+                "agent_tool_call_refs": [
+                    ref
+                    for invocation in invocations
+                    for ref in invocation.result.tool_call_refs
+                ],
                 "tool_operations": tool_operations,
-                "token_usage": invocation.result.token_usage,
+                "repair_trigger": repair_trigger,
+                "token_usage": {
+                    "prompt": sum(
+                        int(invocation.result.token_usage.get("prompt", 0))
+                        for invocation in invocations
+                    ),
+                    "completion": sum(
+                        int(invocation.result.token_usage.get("completion", 0))
+                        for invocation in invocations
+                    ),
+                },
             },
         )
 

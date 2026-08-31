@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from devpilot.api import create_app
-from devpilot.api.core.config import ApiSettings
+from devpilot.api.core.config import ApiSettings, Principal
 
 
 def test_non_development_environment_requires_explicit_api_tokens(monkeypatch):
@@ -71,3 +71,24 @@ def test_production_rejects_short_static_tokens(monkeypatch):
 
     with pytest.raises(ValueError, match="at least 32"):
         ApiSettings.from_env()
+
+
+def test_api_owned_task_service_uses_the_configured_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("DEVPILOT_MODEL", "configured-model")
+    monkeypatch.setenv(
+        "DEVPILOT_MODEL_BASE_URL", "https://models.example.test/compatible/v1"
+    )
+    settings = ApiSettings(tokens={"token": Principal("test-user")})
+
+    app = create_app(settings=settings)
+    service = app.state.task_service
+    try:
+        assert service.model_name == "configured-model"
+        assert service.gateway.options == {
+            "model": "configured-model",
+            "base_url": "https://models.example.test/compatible/v1",
+            "api_key": None,
+        }
+    finally:
+        service.close()

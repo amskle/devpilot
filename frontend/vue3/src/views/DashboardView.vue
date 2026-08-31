@@ -9,6 +9,21 @@ const router = useRouter();
 const creating = ref(false);
 const error = ref<string | null>(null);
 const form = ref({ repo: "", request: "", revision: "HEAD", model: "" });
+const repositoryPathPlaceholder = import.meta.env.VITE_REPOSITORY_PATH_PLACEHOLDER || "C:\\projects\\example";
+const usesContainerRepositoryPath = repositoryPathPlaceholder.startsWith("/repos/");
+
+function creationErrorMessage(caught: unknown): string {
+  if (!(caught instanceof ApiError)) {
+    return "任务未创建。请核对仓库路径和服务连接后重试。";
+  }
+  if (caught.status === 422 && caught.message === "repository path must be absolute") {
+    return `仓库路径必须是 API 服务可访问的绝对路径，例如 ${repositoryPathPlaceholder}。`;
+  }
+  if (caught.status === 422 && caught.message.includes("DEVPILOT_API_REPOSITORY_ROOTS")) {
+    return `仓库路径必须位于允许的目录中；Docker 部署请使用 /repos/<仓库目录>。`;
+  }
+  return `${caught.message} 请核对仓库路径和服务连接后重试。`;
+}
 
 async function create(): Promise<void> {
   creating.value = true;
@@ -17,9 +32,7 @@ async function create(): Promise<void> {
     const result: TaskState = await api.createTask({ ...form.value, model: form.value.model || undefined });
     await router.push(`/tasks/${result.task_id}`);
   } catch (caught) {
-    error.value = caught instanceof ApiError
-      ? `${caught.message} 请核对仓库路径和服务连接后重试。`
-      : "任务未创建。请核对仓库路径和服务连接后重试。";
+    error.value = creationErrorMessage(caught);
   } finally {
     creating.value = false;
   }
@@ -60,7 +73,8 @@ async function create(): Promise<void> {
         <div class="create-context">
           <label class="field repo-field">
             <span>仓库路径</span>
-            <input v-model="form.repo" required placeholder="C:\projects\example" />
+            <input v-model="form.repo" required :placeholder="repositoryPathPlaceholder" />
+            <small v-if="usesContainerRepositoryPath">Docker 使用容器路径，例如 /repos/devpilot-smoke-case</small>
           </label>
           <details class="composer-options">
             <summary>运行选项</summary>

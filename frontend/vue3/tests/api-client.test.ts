@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiClient, ApiError } from "@/api/client";
+import { AUTH_REQUIRED_EVENT, ApiClient, ApiError } from "@/api/client";
 import { waitingState } from "./fixtures";
 
 function response(body: unknown, status = 200): Response {
@@ -7,6 +7,26 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("ApiClient control contract", () => {
+  it("notifies the application when the API requires a bearer token", async () => {
+    const listener = vi.fn();
+    window.addEventListener(AUTH_REQUIRED_EVENT, listener);
+    const client = new ApiClient({
+      fetchImpl: vi.fn(async () => response({ detail: "Bearer token required" }, 401)) as typeof fetch,
+      tokenProvider: () => null,
+    });
+
+    await expect(client.listTasks()).rejects.toMatchObject({
+      status: 401,
+      message: "Bearer token required",
+    });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      message: "Bearer token required",
+    });
+    window.removeEventListener(AUTH_REQUIRED_EVENT, listener);
+  });
+
   it("binds approval target, revision, bearer token and idempotency key", async () => {
     const calls: RequestInit[] = [];
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

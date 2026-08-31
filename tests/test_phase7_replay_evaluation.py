@@ -252,8 +252,13 @@ def test_evaluation_report_metrics_history_and_comparison(tmp_path):
     gateway = _no_action_gateway(runs=3)
     service = TaskService(data_dir=tmp_path / "data", gateway=gateway)
     try:
+        progress = []
         baseline = service.run_evaluation(
-            dataset, prompt_version="prompt-v1"
+            dataset,
+            prompt_version="prompt-v1",
+            progress_callback=lambda index, total, result: progress.append(
+                (index, total, result.case_id)
+            ),
         )
         candidate = service.run_evaluation(
             dataset,
@@ -268,6 +273,8 @@ def test_evaluation_report_metrics_history_and_comparison(tmp_path):
         assert baseline["metrics"]["status_accuracy"] == 1
         assert baseline["metrics"]["changed_files_f1"] == 1
         assert baseline["metrics"]["errored_cases"] == 0
+        assert baseline["metrics"]["cost_available"] is False
+        assert progress == [(1, 1, "clean-python")]
         assert baseline["dataset"] == dataset.to_state_dict()
         assert service.evaluation_report(baseline["evaluation_id"]) == baseline
         assert len(service.evaluation_history()) == 2
@@ -315,5 +322,39 @@ def test_evaluation_records_case_errors_instead_of_aborting(tmp_path):
         assert report["metrics"]["errored_cases"] == 1
         assert report["cases"][0]["score"] == 0
         assert report["cases"][0]["error"]
+    finally:
+        service.close()
+
+
+def test_evaluation_records_normalized_task_failure_details(tmp_path):
+    repo = make_test_repo(tmp_path / "repo")
+    service = TaskService(
+        data_dir=tmp_path / "data",
+        gateway=ScriptedFakeModelGateway(
+            {"planning": [TimeoutError("gateway timeout")]},
+            strict=False,
+        ),
+    )
+    try:
+        report = service.run_evaluation(
+            {
+                "name": "failed-task",
+                "version": "1",
+                "cases": [
+                    {
+                        "case_id": "timeout",
+                        "repo": str(repo),
+                        "request": "inspect",
+                        "expectation": {"statuses": ["FAILED"]},
+                    }
+                ],
+            }
+        )
+
+        case = report["cases"][0]
+        assert case["actual_status"] == "FAILED"
+        assert case["failure_code"] == "TimeoutError"
+        assert case["failure_summary"] == "gateway timeout"
+        assert case["error"] is None
     finally:
         service.close()

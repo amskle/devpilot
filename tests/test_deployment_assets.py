@@ -67,6 +67,18 @@ def test_nginx_supports_spa_websocket_and_query_safe_access_logs():
     assert "$args" not in config
 
 
+def test_docker_frontend_uses_the_container_repository_path():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    assert compose["services"]["nginx"]["build"]["args"][
+        "VITE_REPOSITORY_PATH_PLACEHOLDER"
+    ] == "/repos/example"
+
+    dockerfile = (ROOT / "docker" / "nginx" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "VITE_REPOSITORY_PATH_PLACEHOLDER=/repos/example" in dockerfile
+
+
 def test_docker_environment_example_uses_safe_local_defaults():
     example = (ROOT / ".env.docker.example").read_text(encoding="utf-8")
 
