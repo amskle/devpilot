@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/vue";
+import { fireEvent, render, screen, within } from "@testing-library/vue";
 import { describe, expect, it, vi } from "vitest";
 import { budget } from "./fixtures";
 
@@ -12,6 +12,53 @@ vi.mock("@/api/client", () => ({
 import TaskSidebar from "@/components/TaskSidebar.vue";
 
 describe("TaskSidebar", () => {
+  it("shows ten recent tasks and searches older tasks with pagination in a dialog", async () => {
+    const tasks = Array.from({ length: 10 }, (_, index) => ({
+      task_id: `task_${index}`, status: "COMPLETED", request: `最近任务 ${index}`, execution_budget: budget,
+    }));
+    apiMock.listTasks.mockReset();
+    apiMock.listTasks.mockResolvedValueOnce({ items: tasks, next_cursor: "page2" });
+    const view = render(TaskSidebar, {
+      global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
+    });
+    await screen.findByText("最近任务 9");
+    expect(view.container.querySelectorAll(".history-item")).toHaveLength(10);
+    expect(apiMock.listTasks).toHaveBeenCalledWith({ limit: 10 });
+    apiMock.listTasks.mockResolvedValueOnce({ items: tasks, next_cursor: "page2" });
+    await fireEvent.click(screen.getByRole("button", { name: "查看更多" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "查询任务历史" }));
+    await dialog.findByText("最近任务 9");
+    apiMock.listTasks.mockResolvedValueOnce({ items: [{ ...tasks[0], task_id: "older", request: "历史任务" }], next_cursor: null });
+    await fireEvent.click(dialog.getByRole("button", { name: "下一页" }));
+    await dialog.findByText("历史任务");
+    expect(apiMock.listTasks).toHaveBeenLastCalledWith({ limit: 10, query: "", cursor: "page2" });
+    apiMock.listTasks.mockResolvedValueOnce({ items: [{ ...tasks[0], task_id: "very_old", request: "百条以前的任务" }], next_cursor: null });
+    await fireEvent.update(dialog.getByRole("searchbox"), "百条以前");
+    await fireEvent.submit(dialog.getByRole("button", { name: "查询" }).closest("form")!);
+    await dialog.findByText("百条以前的任务");
+    expect(apiMock.listTasks).toHaveBeenLastCalledWith({ limit: 10, query: "百条以前", cursor: undefined });
+    expect(dialog.getByText("第 1 页")).toBeTruthy();
+    expect(dialog.getByRole("button", { name: "下一页" }).hasAttribute("disabled")).toBe(true);
+    await fireEvent.click(dialog.getByText("百条以前的任务"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(view.container.querySelectorAll(".history-item")).toHaveLength(10);
+  });
+
+  it("shows query failures with retry and supports empty results and Escape", async () => {
+    apiMock.listTasks.mockReset();
+    apiMock.listTasks.mockResolvedValueOnce({ items: [], next_cursor: null });
+    render(TaskSidebar, { global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } } });
+    await screen.findByText("暂无任务。");
+    apiMock.listTasks.mockRejectedValueOnce(new Error("offline"));
+    await fireEvent.click(screen.getByRole("button", { name: "查看更多" }));
+    await screen.findByRole("alert");
+    apiMock.listTasks.mockResolvedValueOnce({ items: [], next_cursor: null });
+    await fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByText("没有匹配的任务。");
+    await fireEvent(screen.getByRole("dialog"), new Event("cancel"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("keeps task history visible and metrics behind a disclosure", async () => {
     apiMock.listTasks.mockResolvedValue({
       next_cursor: null,

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from devpilot.domain.models import Replacement, WorkspaceRef
 from devpilot.errors import PolicyDeniedError, ToolExecutionError
 from devpilot.services.budget import BudgetService
+from devpilot import telemetry
 from devpilot.workspace import WorkspaceManager
 from skills.registry import run_skill, skill_metadata_path
 
@@ -131,6 +132,46 @@ class ToolExecutor:
         self._completed: dict[str, ToolResult] = {}
 
     def execute(
+        self,
+        name: str,
+        inputs: dict[str, Any],
+        *,
+        workspace: WorkspaceRef,
+        allowed_tools: tuple[str, ...],
+        agent_id: str | None,
+        operation_id: str,
+        execution_budget: dict[str, Any],
+        idempotency_key: str | None = None,
+        node: str | None = None,
+    ) -> ToolResult:
+        with telemetry.tool_observation(
+            name=name,
+            agent_id=agent_id,
+            operation_id=operation_id,
+            node=node or "",
+            inputs=inputs,
+        ) as observation:
+            try:
+                result = self._execute(
+                    name,
+                    inputs,
+                    workspace=workspace,
+                    allowed_tools=allowed_tools,
+                    agent_id=agent_id,
+                    operation_id=operation_id,
+                    execution_budget=execution_budget,
+                    idempotency_key=idempotency_key,
+                )
+            except Exception as exc:
+                observation.update(
+                    level="ERROR",
+                    status_message=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            observation.update(output=result.output, metadata={"attempts": result.attempts})
+        return result
+
+    def _execute(
         self,
         name: str,
         inputs: dict[str, Any],

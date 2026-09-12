@@ -13,6 +13,7 @@ from devpilot.domain.models import AgentResult, AgentSpec, ModelProfile, Workspa
 from devpilot.errors import ModelGatewayError
 from devpilot.services.budget import BudgetService
 from devpilot.services.pricing import PricingCatalog
+from devpilot import telemetry
 from devpilot.tools.executor import ToolExecutor
 
 
@@ -38,6 +39,54 @@ class AgentRunner:
         execution_budget: dict[str, Any],
         model_profile: ModelProfile | None = None,
         pricing_catalog: PricingCatalog | None = None,
+        node: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+        attempt: int = 1,
+    ) -> AgentInvocation:
+        with telemetry.agent_observation(
+            agent_id=spec.agent_id,
+            task_id=task_id or "",
+            run_id=run_id or "",
+            node=node or "",
+            attempt=attempt,
+            context_keys=sorted(node_context),
+        ) as observation:
+            result = self._invoke_loop(
+                spec,
+                node_context=node_context,
+                output_model=output_model,
+                workspace=workspace,
+                execution_budget=execution_budget,
+                model_profile=model_profile,
+                pricing_catalog=pricing_catalog,
+                node=node,
+                observation=observation,
+            )
+            observation.update(
+                output={
+                    "status": result.result.status,
+                    "summary": result.result.summary,
+                    "structured_output": result.result.structured_output,
+                    "error": result.result.error,
+                },
+                metadata=telemetry.observation_output_metadata(result.result.structured_output),
+                level="ERROR" if result.result.status != "ok" else "DEFAULT",
+            )
+        return result
+
+    def _invoke_loop(
+        self,
+        spec: AgentSpec,
+        *,
+        node_context: dict[str, Any],
+        output_model: type[BaseModel],
+        workspace: WorkspaceRef,
+        execution_budget: dict[str, Any],
+        model_profile: ModelProfile | None,
+        pricing_catalog: PricingCatalog | None,
+        node: str | None,
+        observation: Any,
     ) -> AgentInvocation:
         output_schema = json.dumps(
             output_model.model_json_schema(),
@@ -83,6 +132,7 @@ class AgentRunner:
                 estimated_cost=estimated_cost,
             )
             started = time.monotonic()
+            turn = tool_rounds + 1
             try:
                 response = self.gateway.complete(
                     agent_id=spec.agent_id,
@@ -97,6 +147,8 @@ class AgentRunner:
                     ),
                     output_model=output_model,
                     timeout_seconds=spec.timeout_seconds,
+                    node=node,
+                    turn=turn,
                 )
             except Exception as exc:
                 budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
@@ -118,6 +170,14 @@ class AgentRunner:
                 completion_tokens=response.usage.completion_tokens,
                 reserved_cost=estimated_cost,
                 actual_cost=actual_cost,
+            )
+            observation.update(
+                metadata={
+                    "turns": turn,
+                    "tool_rounds": tool_rounds,
+                    "prompt_tokens": total_prompt,
+                    "completion_tokens": total_completion,
+                }
             )
 
             if response.tool_calls:
@@ -165,6 +225,7 @@ class AgentRunner:
                             agent_id=spec.agent_id,
                             operation_id=operation_id,
                             execution_budget=budget,
+                            node=node,
                         )
                     except Exception as exc:
                         if not hasattr(exc, "execution_budget"):

@@ -12,6 +12,8 @@ from typing import Any, Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from devpilot import telemetry
+
 from devpilot.agents.definitions import AGENT_SPECS
 from devpilot.agents.model_gateway import LazyOpenAICompatibleGateway, ModelGateway
 from devpilot.agents.runner import AgentRunner
@@ -81,6 +83,7 @@ class TaskRuntimeCore:
     def close(self) -> None:
         self.control.close()
         self._checkpoint_conn.close()
+        telemetry.flush_telemetry()
 
     @staticmethod
     def _config(run_id: str) -> dict[str, Any]:
@@ -191,6 +194,87 @@ class TaskRuntimeCore:
         self, graph: Any, run_id: str, value: GraphState | Command
     ) -> GraphState:
         config = self._config(run_id)
+        if not telemetry.telemetry_enabled():
+            return self._invoke_graph(graph, config, run_id, value)
+        identity = self._trace_identity(graph, config, value)
+        if identity is None:
+            return self._invoke_graph(graph, config, run_id, value)
+        task_id, request, parent_run_id, resumed, revision, model = identity
+        with telemetry.task_run_observation(
+            task_id=task_id,
+            run_id=run_id,
+            request=request,
+            model=model,
+            revision=revision,
+            parent_run_id=parent_run_id,
+            resumed=resumed,
+        ) as observation:
+            state = self._invoke_graph(graph, config, run_id, value)
+            observation.update(
+                output=self._trace_output(state),
+                metadata={"baseline_revision": (state["workspace_ref"] or {}).get("baseline_revision", revision)},
+                level="ERROR" if state["status"] == "FAILED" else "DEFAULT",
+            )
+            return state
+
+    def _trace_identity(
+        self, graph: Any, config: dict[str, Any], value: GraphState | Command
+    ) -> tuple[str, str, str | None, bool, str, str] | None:
+        """Resolve trace identity for one invocation, or ``None`` to skip tracing.
+
+        A first run carries the full initial state; a resumed, replanned, or
+        approval-driven run carries a ``Command`` and is identified from the
+        checkpoint already stored under this thread.
+        """
+
+        if isinstance(value, dict):
+            task_id = value.get("task_id")
+            if not task_id:
+                return None
+            return (
+                str(task_id),
+                self._request_from_state(value),
+                value.get("parent_run_id"),
+                False,
+                str(value.get("revision") or "HEAD"),
+                self._pricing_context(value)[1],
+            )
+        run_id = config["configurable"]["thread_id"]
+        snapshot = graph.get_state(config)
+        if not snapshot.values:
+            return None
+        previous = validate_state(dict(snapshot.values))
+        return (
+            previous["task_id"],
+            self._request_from_state(previous, artifact_run_id=run_id),
+            previous["parent_run_id"],
+            True,
+            (previous["workspace_ref"] or {}).get("baseline_revision") or "HEAD",
+            self._pricing_context(previous)[1],
+        )
+
+    @staticmethod
+    def _trace_output(state: GraphState) -> dict[str, Any]:
+        verification = state["verification"] or {}
+        proposal = state["patch_proposal"] or {}
+        failure = state["latest_failure"] or {}
+        review = state["review"] or {}
+        return {
+            key: value
+            for key, value in {
+                "status": state["status"],
+                "pause_reason": state["pause_reason"],
+                "verification_passed": verification.get("passed"),
+                "changed_files": proposal.get("changed_files"),
+                "failure_code": failure.get("error_code"),
+                "summary": review.get("summary"),
+            }.items()
+            if value is not None
+        }
+
+    def _invoke_graph(
+        self, graph: Any, config: dict[str, Any], run_id: str, value: GraphState | Command
+    ) -> GraphState:
         try:
             graph.invoke(value, config=config)
         except StateConflictError:

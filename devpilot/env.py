@@ -8,6 +8,7 @@ from pathlib import Path
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DOUBLE_QUOTED_ESCAPE = re.compile(r"\\([\\\"nrt])")
 _ESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
+_LOADED_PREFIXES = ("DEVPILOT_", "LANGFUSE_")
 
 
 def _dotenv_value(raw: str, *, line_number: int) -> str:
@@ -28,7 +29,7 @@ def _dotenv_value(raw: str, *, line_number: int) -> str:
 
 
 def load_devpilot_env(path: Path | str = ".env", *, required: bool = False) -> bool:
-    """Load DEVPILOT_* settings without overriding the process environment."""
+    """Load DEVPILOT_* and LANGFUSE_* settings without overriding the process environment."""
 
     env_path = Path(path).expanduser()
     if not env_path.is_file():
@@ -45,14 +46,14 @@ def load_devpilot_env(path: Path | str = ".env", *, required: bool = False) -> b
         if line.startswith("export "):
             line = line[7:].lstrip()
         if "=" not in line:
-            if line.startswith("DEVPILOT_"):
+            if line.startswith(_LOADED_PREFIXES):
                 raise ValueError(f"invalid .env assignment on line {line_number}")
             continue
         key, raw_value = line.split("=", 1)
         key = key.strip()
         if not _ENV_KEY.fullmatch(key):
             raise ValueError(f"invalid .env key on line {line_number}: {key!r}")
-        if not key.startswith("DEVPILOT_"):
+        if not key.startswith(_LOADED_PREFIXES):
             continue
         os.environ.setdefault(
             key,

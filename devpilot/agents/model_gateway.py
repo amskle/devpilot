@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from devpilot.errors import ModelGatewayError
+from devpilot import telemetry
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ class ModelGateway(Protocol):
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        node: str | None = None,
+        turn: int | None = None,
     ) -> ModelResponse: ...
 
 
@@ -78,6 +81,8 @@ class ScriptedFakeModelGateway:
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        node: str | None = None,
+        turn: int | None = None,
     ) -> ModelResponse:
         self.calls.append(
             {
@@ -86,6 +91,8 @@ class ScriptedFakeModelGateway:
                 "messages": copy.deepcopy(messages),
                 "tools": [item["function"]["name"] for item in tools],
                 "output_model": output_model.__name__,
+                "node": node,
+                "turn": turn,
             }
         )
         queue = self._scenario.get(agent_id)
@@ -105,19 +112,35 @@ class ScriptedFakeModelGateway:
         return sum(1 for call in self.calls if agent_id is None or call["agent_id"] == agent_id)
 
 
+def _openai_client_class(*, traced: bool = False):
+    """Prefer the Langfuse OpenAI drop-in so model calls are traced automatically.
+
+    Initialize telemetry first; offline usage keeps the normal OpenAI adapter.
+    """
+
+    if traced:
+        from langfuse.openai import OpenAI
+    else:
+        from openai import OpenAI
+    return OpenAI
+
+
 class OpenAICompatibleGateway:
     """OpenAI-compatible Chat Completions adapter with structured-output fallback."""
 
     def __init__(self, *, model: str, base_url: str | None = None, api_key: str | None = None):
         try:
-            from openai import OpenAI
+            self.traced = telemetry.telemetry_enabled()
+            client_class = _openai_client_class(traced=self.traced)
         except ImportError as exc:  # pragma: no cover - dependency smoke covers this
             raise ModelGatewayError("openai package is required") from exc
         key = api_key or os.environ.get("DEVPILOT_MODEL_API_KEY")
         if not key:
             raise ModelGatewayError("DEVPILOT_MODEL_API_KEY is required")
         self.model = model
-        self.client = OpenAI(api_key=key, base_url=base_url or os.environ.get("DEVPILOT_MODEL_BASE_URL"))
+        self.client = client_class(
+            api_key=key, base_url=base_url or os.environ.get("DEVPILOT_MODEL_BASE_URL")
+        )
 
     @staticmethod
     def _convert(response: Any) -> ModelResponse:
@@ -142,14 +165,21 @@ class OpenAICompatibleGateway:
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        node: str | None = None,
+        turn: int | None = None,
     ) -> ModelResponse:
         schema = output_model.model_json_schema()
         common = {"model": self.model, "messages": messages, "timeout": timeout_seconds}
         if tools:
             common["tools"] = tools
+        trace_attributes = {
+            "name": f"generate-{agent_id}",
+            "metadata": {"agent_id": agent_id, "node": node, "turn": turn},
+        } if self.traced else {}
         try:
             response = self.client.chat.completions.create(
                 **common,
+                **trace_attributes,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {"name": output_model.__name__, "strict": True, "schema": schema},
@@ -163,12 +193,15 @@ class OpenAICompatibleGateway:
             }
             try:
                 fallback = {key: value for key, value in common.items() if key != "tools"}
-                response = self.client.chat.completions.create(**fallback, tools=[*tools, submit_tool])
+                response = self.client.chat.completions.create(
+                    **fallback, **trace_attributes, tools=[*tools, submit_tool]
+                )
                 return self._convert(response)
             except Exception:
                 try:
                     response = self.client.chat.completions.create(
                         **{key: value for key, value in common.items() if key != "tools"},
+                        **trace_attributes,
                         response_format={"type": "json_object"},
                     )
                     return self._convert(response)

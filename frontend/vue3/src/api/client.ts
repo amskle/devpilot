@@ -101,6 +101,12 @@ function messageFromBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
+export interface RepositoryDirectories {
+  path: string | null;
+  parent: string | null;
+  items: { name: string; path: string }[];
+}
+
 function notifyAuthenticationRequired(message: string): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT, { detail: { message } }));
@@ -147,10 +153,11 @@ export class ApiClient {
     return body as T;
   }
 
-  async listTasks(query: { status?: string; cursor?: string; limit?: number } = {}): Promise<TaskListResult> {
+  async listTasks(query: { status?: string; cursor?: string; limit?: number; query?: string } = {}): Promise<TaskListResult> {
     const search = new URLSearchParams();
     if (query.status) search.set("status", query.status);
     if (query.cursor) search.set("cursor", query.cursor);
+    if (query.query) search.set("query", query.query);
     search.set("limit", String(query.limit ?? 100));
     const body = await this.request<TaskListResult | TaskSummary[]>(`/tasks?${search}`);
     return Array.isArray(body) ? { items: body, next_cursor: null } : body;
@@ -158,6 +165,12 @@ export class ApiClient {
 
   getTask(taskId: string): Promise<TaskState> {
     return this.request<TaskState>(`/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  listRepositoryDirectories(path?: string): Promise<RepositoryDirectories> {
+    const search = new URLSearchParams();
+    if (path) search.set("path", path);
+    return this.request(`/repositories/directories?${search}`);
   }
 
   createTask(input: { repo: string; request: string; revision?: string; model?: string }): Promise<TaskState> {

@@ -146,6 +146,7 @@ class ControlPlaneService:
         task_status: TaskStatus | None,
         cursor: str | None,
         limit: int,
+        query: str | None = None,
     ) -> dict[str, Any]:
         offset = self._decode_cursor(cursor)
         items = await run_in_threadpool(
@@ -153,6 +154,12 @@ class ControlPlaneService:
             status=task_status.value if task_status else None,
             owner=None if principal.is_admin else principal.subject,
         )
+        if query and query.strip():
+            term = query.strip().casefold()
+            items = [
+                item for item in items
+                if term in f"{item.get('request', '')} {item['task_id']}".casefold()
+            ]
         page = items[offset : offset + limit]
         next_offset = offset + len(page)
         return {

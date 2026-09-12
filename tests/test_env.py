@@ -37,6 +37,24 @@ def test_load_devpilot_env_preserves_process_environment(tmp_path, monkeypatch):
     assert os.environ["DEVPILOT_MODEL"] == "process-model"
 
 
+def test_load_langfuse_env_preserves_existing_values_and_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "process-key")
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_BASE_URL", raising=False)
+    monkeypatch.delenv("UNRELATED_SETTING", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        'LANGFUSE_PUBLIC_KEY=file-key\nLANGFUSE_SECRET_KEY="test-secret"\n'
+        'LANGFUSE_BASE_URL=http://localhost:3000\nUNRELATED_SETTING=ignored\n',
+        encoding="utf-8",
+    )
+    load_devpilot_env(env_file)
+    assert os.environ["LANGFUSE_PUBLIC_KEY"] == "process-key"
+    assert os.environ["LANGFUSE_SECRET_KEY"] == "test-secret"
+    assert os.environ["LANGFUSE_BASE_URL"] == "http://localhost:3000"
+    assert "UNRELATED_SETTING" not in os.environ
+
+
 def test_load_devpilot_env_handles_missing_and_invalid_files(tmp_path):
     missing = tmp_path / "missing.env"
     assert load_devpilot_env(missing) is False

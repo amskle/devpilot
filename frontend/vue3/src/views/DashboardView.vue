@@ -3,11 +3,13 @@ import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
 import TaskSidebar from "@/components/TaskSidebar.vue";
+import RepositoryPickerDialog from "@/components/RepositoryPickerDialog.vue";
 import type { TaskState } from "@/domain/types";
 
 const router = useRouter();
 const creating = ref(false);
 const error = ref<string | null>(null);
+const pickerOpen = ref(false);
 const form = ref({ repo: "", request: "", revision: "HEAD", model: "" });
 const repositoryPathPlaceholder = import.meta.env.VITE_REPOSITORY_PATH_PLACEHOLDER || "C:\\projects\\example";
 const usesContainerRepositoryPath = repositoryPathPlaceholder.startsWith("/repos/");
@@ -26,6 +28,10 @@ function creationErrorMessage(caught: unknown): string {
 }
 
 async function create(): Promise<void> {
+  if (!form.value.repo) {
+    error.value = "请先选择仓库文件夹。";
+    return;
+  }
   creating.value = true;
   error.value = null;
   try {
@@ -71,11 +77,15 @@ async function create(): Promise<void> {
 
       <form class="create-composer" @submit.prevent="create">
         <div class="create-context">
-          <label class="field repo-field">
-            <span>仓库路径</span>
-            <input v-model="form.repo" required :placeholder="repositoryPathPlaceholder" />
-            <small v-if="usesContainerRepositoryPath">Docker 使用容器路径，例如 /repos/devpilot-smoke-case</small>
-          </label>
+          <div class="field repo-field">
+            <span id="repository-label">仓库路径</span>
+            <button class="repository-select" type="button" aria-labelledby="repository-label repository-value" :disabled="creating" @click="pickerOpen = true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5h6l2 2h10v13H3Z" /></svg>
+              <span id="repository-value">{{ form.repo || '选择仓库文件夹' }}</span>
+              <span>{{ form.repo ? '更换' : '浏览…' }}</span>
+            </button>
+            <small v-if="usesContainerRepositoryPath">选择已挂载到服务中的仓库文件夹</small>
+          </div>
           <details class="composer-options">
             <summary>运行选项</summary>
             <div>
@@ -90,11 +100,12 @@ async function create(): Promise<void> {
         </label>
         <div class="create-actions">
           <span>任务会在独立 worktree 中运行</span>
-          <button class="button button-primary" type="submit" :disabled="creating">
+          <button class="button button-primary" type="submit" :disabled="creating || !form.repo">
             {{ creating ? "正在创建…" : "创建并开始规划" }}
           </button>
         </div>
       </form>
     </section>
+    <RepositoryPickerDialog v-if="pickerOpen" :initial-path="form.repo" @close="pickerOpen = false" @select="form.repo = $event; pickerOpen = false; error = null" />
   </div>
 </template>

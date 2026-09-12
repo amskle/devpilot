@@ -4,6 +4,7 @@ from typing import Any, Callable, Mapping
 
 from langgraph.graph import END, START, StateGraph
 
+from devpilot import telemetry
 from devpilot.domain.models import TaskStatus
 from devpilot.domain.state import GraphState
 
@@ -50,12 +51,25 @@ def _failure_route(state: GraphState) -> str:
     return "diagnosis"
 
 
-def compile_graph(nodes: Mapping[str, Node], checkpointer: Any):
-    """Wire node implementations into the stable DevPilot state-machine topology."""
+def compile_graph(
+    nodes: Mapping[str, Node],
+    checkpointer: Any,
+    node_summary: Callable[[GraphState], dict[str, Any]] | None = None,
+):
+    """Wire node implementations into the stable DevPilot state-machine topology.
+
+    Every node is wrapped in a Langfuse span so
+    one trace shows the full node-level path a task took through the graph.
+    """
 
     builder = StateGraph(GraphState)
     for name, node in nodes.items():
-        builder.add_node(name, node)
+        builder.add_node(
+            name,
+            telemetry.node_observation(
+                name, node_summary or telemetry.graph_node_summary
+            )(node),
+        )
 
     builder.add_edge(START, "workspace_setup")
     builder.add_edge("workspace_setup", "baseline_context")

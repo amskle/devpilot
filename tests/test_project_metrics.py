@@ -24,7 +24,7 @@ def test_static_metrics_match_version_controlled_contracts():
     assert metrics["skills"]["count"] == 8
     assert metrics["task_statuses"]["count"] == 10
     assert metrics["execution_budget_limits"]["count"] == 9
-    assert metrics["api_routes"] == {"http": 19, "websocket": 1, "total": 20}
+    assert metrics["api_routes"] == {"http": 20, "websocket": 1, "total": 21}
     assert metrics["ci_runtimes"] == {
         "python": ["3.10", "3.13"],
         "node": ["22"],

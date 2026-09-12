@@ -51,6 +51,11 @@ services:
       DEVPILOT_MODEL_API_KEY: "${DEVPILOT_MODEL_API_KEY:?Set DEVPILOT_MODEL_API_KEY in .env}"
       DEVPILOT_MODEL_BASE_URL: "${DEVPILOT_MODEL_BASE_URL:-}"
       DEVPILOT_MODEL: "${DEVPILOT_MODEL:-gpt-5-mini}"
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
+      LANGFUSE_BASE_URL: "${DEVPILOT_LANGFUSE_DOCKER_BASE_URL:-http://host.docker.internal:3000}"
+      LANGFUSE_TRACING_ENABLED: "${LANGFUSE_TRACING_ENABLED:-true}"
+      LANGFUSE_TRACING_ENVIRONMENT: "${LANGFUSE_TRACING_ENVIRONMENT:-production}"
     depends_on:
       volume-init:
         condition: service_completed_successfully

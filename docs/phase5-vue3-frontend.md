@@ -6,7 +6,8 @@ Phase 5 在 `frontend/vue3/` 提供 Vue 3 + TypeScript 控制台：
 
 - Conversation Dashboard：底部任务输入、仓库与运行选项，以及从左侧历史快速恢复任务。
 - Task Detail：以用户/Agent 对话为主线，在同一工作区查看当前节点、Run/Revision、实际任务模型、Plan、预算、Timeline、Diff、验证报告和消息记录。
-- Workspace Shell：左侧任务历史与可展开运行概览；移动端切换为可关闭侧栏；右上角提供持久化的白天/夜间模式。
+- Workspace Shell：左侧最多展示最近 10 个任务，运行概览统计这 10 个任务；点击“查看更多”打开历史查询对话框，按需求或任务 ID 搜索全部可见任务，每页 10 条；移动端切换为可关闭侧栏。
+- 仓库选择：点击“选择仓库文件夹”打开网页内文件夹浏览器，逐级打开目录、返回上一级或起始位置，确认后自动填入完整路径，无需手输。右上角提供持久化的白天/夜间模式。
 - Human-in-the-loop：绑定审批对象的批准/拒绝、取消、回滚、完整恢复和正式 ChangeRequest。
 - 可靠事件：先按 `(run_id, after_sequence)` 从 Event Store 补拉，再用短期票据建立 WebSocket；按 `event_id` 去重，序号缺口触发重新补拉。
 - 重连边界：网络错误和服务端暂时失败继续退避重连；认证失败或任务不可访问（HTTP 401/403/404）直接关闭事件流，等待用户重新认证或切换任务。
@@ -40,6 +41,8 @@ Phase 2/3 修正也进入前端契约：
 | 能力 | 请求 |
 |---|---|
 | 任务 | `GET/POST /tasks`、`GET /tasks/{task_id}` |
+| 历史查询 | `GET /tasks?query=&limit=10&cursor=`，先按用户权限与搜索词过滤，再分页 |
+| 仓库目录 | `GET /repositories/directories?path=`，省略 path 时列出可用起始位置 |
 | 详情 | `GET /tasks/{task_id}/plan|diff|trace|messages` |
 | 普通消息 | `POST /tasks/{task_id}/messages`，只记录上下文，不修改 Plan |
 | 持久事件 | `GET /tasks/{task_id}/events?run_id=&after_sequence=` |
@@ -50,6 +53,10 @@ Phase 2/3 修正也进入前端契约：
 | 需求变更 | `POST /tasks/{task_id}/change-requests` |
 
 Phase 4 返回当前 `TaskState`，并在详情响应中提供由价格快照解析出的只读 `model_profile`，不会仅回显服务默认模型。
+
+仓库浏览需要管理员或 `task_creator` 权限，并沿用 `DEVPILOT_API_REPOSITORY_ROOTS` 目录边界；符号链接解析后的目标也必须位于允许范围内。未配置根目录时，仅管理员可以浏览服务所在机器的磁盘根目录。只返回文件夹名称与路径，不读取文件内容；选择后的 Git 仓库有效性、干净状态仍由任务创建流程校验。
+
+文件夹浏览器显示 **API 服务可访问的文件系统**，不调用 Windows 原生资源管理器，也不上传浏览器电脑上的目录。Docker 部署应先挂载仓库并配置允许的根目录，用户再在弹窗内选择挂载后的目录。
 
 ## 本地运行
 

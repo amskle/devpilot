@@ -215,6 +215,37 @@ def test_task_creation_projection_resource_authorization_and_message_boundary(tm
         service.close()
 
 
+def test_task_search_filters_all_visible_history_before_pagination(tmp_path):
+    repo = make_test_repo(tmp_path / "repo")
+    service = TaskService(data_dir=tmp_path / "data", gateway=_no_action_gateway())
+    try:
+        for index in range(12):
+            state = service.create_task(repo, f"searchable CACHE {index}")
+            service.control.bind_task_owner(state["task_id"], "alice")
+        hidden = service.create_task(repo, "searchable CACHE secret")
+        service.control.bind_task_owner(hidden["task_id"], "bob")
+        with TestClient(create_app(service=service, settings=_settings(repo.parent))) as client:
+            first = client.get("/api/tasks", headers=ALICE_HEADERS,
+                               params={"query": " cache ", "limit": 10}).json()
+            assert len(first["items"]) == 10
+            assert first["next_cursor"]
+            second = client.get("/api/tasks", headers=ALICE_HEADERS,
+                                params={"query": "cache", "limit": 10,
+                                        "cursor": first["next_cursor"]}).json()
+            assert len(second["items"]) == 2
+            assert second["next_cursor"] is None
+            ids = {item["task_id"] for item in first["items"] + second["items"]}
+            assert len(ids) == 12
+            assert hidden["task_id"] not in ids
+            by_id = client.get("/api/tasks", headers=ALICE_HEADERS,
+                               params={"query": state["task_id"]}).json()
+            assert [item["task_id"] for item in by_id["items"]] == [state["task_id"]]
+            assert client.get("/api/tasks", headers=ALICE_HEADERS,
+                              params={"query": "no match"}).json()["items"] == []
+    finally:
+        service.close()
+
+
 def test_task_list_lazily_expires_pending_approval(tmp_path):
     repo = make_test_repo(tmp_path / "repo")
     clock = FrozenClock(datetime(2026, 1, 1, tzinfo=timezone.utc))

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { api, ApiError } from "@/api/client";
 import StatusBadge from "@/components/StatusBadge.vue";
+import TaskHistoryDialog from "@/components/TaskHistoryDialog.vue";
 import { compactId, formatDate } from "@/domain/format";
 import type { TaskSummary } from "@/domain/types";
 
@@ -10,15 +11,11 @@ const props = defineProps<{ currentTaskId?: string }>();
 const tasks = ref<TaskSummary[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
-const query = ref("");
+const historyOpen = ref(false);
 const open = ref(false);
 
 const terminalStatuses = new Set(["COMPLETED", "COMPLETED_NO_CHANGES", "CANCELLED", "FAILED", "POLICY_REJECTED"]);
-const filtered = computed(() => {
-  const term = query.value.trim().toLocaleLowerCase();
-  if (!term) return tasks.value;
-  return tasks.value.filter((task) => `${task.request ?? ""} ${task.task_id}`.toLocaleLowerCase().includes(term));
-});
+const recentTasks = computed(() => tasks.value.slice(0, 10));
 const metrics = computed(() => ({
   total: tasks.value.length,
   running: tasks.value.filter((task) => !terminalStatuses.has(task.status)).length,
@@ -34,7 +31,7 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
-    tasks.value = (await api.listTasks({ limit: 100 })).items;
+    tasks.value = (await api.listTasks({ limit: 10 })).items;
   } catch (caught) {
     error.value = caught instanceof ApiError ? caught.message : "无法读取任务历史";
   } finally {
@@ -42,7 +39,10 @@ async function load(): Promise<void> {
   }
 }
 
-watch(() => props.currentTaskId, () => (open.value = false));
+watch(() => props.currentTaskId, () => {
+  open.value = false;
+  historyOpen.value = false;
+});
 onMounted(load);
 </script>
 
@@ -56,7 +56,7 @@ onMounted(load);
     <div class="sidebar-head">
       <div>
         <strong>任务历史</strong>
-        <span>{{ metrics.total }} 个任务</span>
+        <span>最近 {{ recentTasks.length }} 个任务</span>
       </div>
       <button class="icon-button sidebar-close" type="button" aria-label="关闭任务历史" @click="open = false">×</button>
     </div>
@@ -66,13 +66,9 @@ onMounted(load);
       新建任务
     </RouterLink>
 
-    <label class="sidebar-search">
-      <span>搜索任务</span>
-      <div><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg><input v-model="query" type="search" placeholder="需求或任务 ID" /></div>
-    </label>
-
     <details class="metrics-disclosure">
       <summary><span>运行概览</span><small>展开指标</small></summary>
+      <p class="recent-metrics-note">统计最近 {{ recentTasks.length }} 个任务</p>
       <dl>
         <div><dt>任务总数</dt><dd>{{ metrics.total }}</dd></div>
         <div><dt>进行中</dt><dd>{{ metrics.running }}</dd></div>
@@ -87,7 +83,7 @@ onMounted(load);
       <div v-else-if="error" class="sidebar-error" role="alert"><span>{{ error }}</span><button type="button" @click="load">重试</button></div>
       <template v-else>
         <RouterLink
-          v-for="task in filtered"
+          v-for="task in recentTasks"
           :key="task.task_id"
           class="history-item"
           :class="{ active: task.task_id === currentTaskId }"
@@ -97,9 +93,12 @@ onMounted(load);
           <StatusBadge :status="task.status" />
         </RouterLink>
       </template>
-      <div v-if="!loading && !error && !filtered.length" class="sidebar-empty">没有匹配的任务。</div>
+      <div v-if="!loading && !error && !recentTasks.length" class="sidebar-empty">暂无任务。</div>
     </div>
+
+    <button class="button button-secondary history-more" type="button" @click="historyOpen = true; open = false">查看更多</button>
 
     <footer class="sidebar-foot"><i aria-hidden="true" /><span>事件持久化 · 控制命令显式执行</span></footer>
   </aside>
+  <TaskHistoryDialog v-if="historyOpen" :current-task-id="currentTaskId" @close="historyOpen = false" />
 </template>

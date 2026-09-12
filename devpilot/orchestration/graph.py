@@ -206,6 +206,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             agent_id=None,
             operation_id=f"baseline:{state['run_id']}",
             execution_budget=state["execution_budget"],
+            node="baseline_context",
         )
         ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "baseline_context", result.output)
         return _merge_transition(
@@ -251,6 +252,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             agent_id=None,
             operation_id=f"baseline-verification:{state['run_id']}",
             execution_budget=state["execution_budget"],
+            node="baseline_verification",
         )
         report_ref = runtime.artifacts.put_json(
             state["task_id"], state["run_id"], "baseline_verification_report", result.output
@@ -304,6 +306,9 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             execution_budget=state["execution_budget"],
             model_profile=runtime.model_profile,
             pricing_catalog=runtime.pricing_catalog,
+            node="planning",
+            task_id=state["task_id"],
+            run_id=state["run_id"],
         )
         if invocation.result.status != "ok":
             _raise_agent_error(invocation)
@@ -399,6 +404,9 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             execution_budget=state["execution_budget"],
             model_profile=runtime.model_profile,
             pricing_catalog=runtime.pricing_catalog,
+            node="diagnosis",
+            task_id=state["task_id"],
+            run_id=state["run_id"],
         )
         if invocation.result.status != "ok":
             _raise_agent_error(invocation)
@@ -513,6 +521,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
         def invoke_patch_agent(
             execution_budget: dict[str, Any],
             repair_context: dict[str, Any] | None = None,
+            attempt: int = 1,
         ):
             node_context = dict(base_context)
             if repair_context is not None:
@@ -525,6 +534,10 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 execution_budget=execution_budget,
                 model_profile=runtime.model_profile,
                 pricing_catalog=runtime.pricing_catalog,
+                node="patch_generation",
+                task_id=state["task_id"],
+                run_id=state["run_id"],
+                attempt=attempt,
             )
             if candidate.result.status != "ok":
                 _raise_agent_error(candidate)
@@ -553,6 +566,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                         f"{attempt}:{index}"
                     ),
                     execution_budget=budget,
+                    node="patch_generation",
                 )
                 budget = result.execution_budget
                 operations.append(
@@ -589,7 +603,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
                 "execution_budget",
                 invocations[-1].execution_budget,
             )
-            invocations.append(invoke_patch_agent(retry_budget, repair_trigger))
+            invocations.append(invoke_patch_agent(retry_budget, repair_trigger, attempt=2))
             patch, files, tool_operations, budget = materialize_patch(
                 invocations[-1], 1
             )
@@ -647,6 +661,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             agent_id=None,
             operation_id=f"risk:{proposal.patch_id}",
             execution_budget=state["execution_budget"],
+            node="risk_assessment",
         )
         risk_ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "risk_report", result.output)
         decision = result.output["decision"]
@@ -800,6 +815,7 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             agent_id=None,
             operation_id=f"verification:{state['run_id']}:{state['state_revision']}",
             execution_budget=state["execution_budget"],
+            node="run_verification",
         )
         report_ref = runtime.artifacts.put_json(state["task_id"], state["run_id"], "verification_report", result.output)
         value = {**result.output, "phase": "post_patch", "report_ref": report_ref.to_state_dict()}
@@ -983,6 +999,9 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             execution_budget=state["execution_budget"],
             model_profile=runtime.model_profile,
             pricing_catalog=runtime.pricing_catalog,
+            node="review",
+            task_id=state["task_id"],
+            run_id=state["run_id"],
         )
         if invocation.result.status != "ok":
             _raise_agent_error(invocation)

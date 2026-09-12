@@ -47,9 +47,10 @@ async def list_tasks(
     task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
     cursor: Annotated[str | None, Query(description="Cursor returned by the previous page")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    query: Annotated[str | None, Query(max_length=200, description="Search request or task ID")] = None,
 ) -> dict[str, Any]:
     return await control.list_tasks(
-        principal, task_status=task_status, cursor=cursor, limit=limit
+        principal, task_status=task_status, cursor=cursor, limit=limit, query=query
     )
 
 
