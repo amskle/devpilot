@@ -734,6 +734,11 @@ def test_restore_forks_new_run_and_restores_git_plan_and_artifacts(tmp_path):
             failed["state_revision"],
             idempotency_key="rollback-once",
         )
+        assert any(
+            alert["rule"] == "HUMAN_INTERVENTION"
+            and alert["evidence"]["pause_reason"] == "ROLLBACK_COMPLETED"
+            for alert in service.alert_history(failed["task_id"])
+        )
         duplicate_rollback = service.rollback(
             failed["task_id"],
             recovery_id,

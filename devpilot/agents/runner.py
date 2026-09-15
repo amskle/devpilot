@@ -115,6 +115,8 @@ class AgentRunner:
         tool_rounds = 0
         tools_disabled = False
         schema_repaired = False
+        retrieval_called = False
+        retrieval_evidence: dict[str, dict[str, Any]] = {}
         estimated_tokens = 0
         estimated_cost = "0"
         if pricing_catalog is not None and model_profile is not None:
@@ -233,6 +235,23 @@ class AgentRunner:
                         raise
                     budget = tool_result.execution_budget
                     tool_refs.append(operation_id)
+                    if call.name == "repo-retrieval":
+                        retrieval_called = True
+                        repository_revision = tool_result.output.get(
+                            "repository_revision"
+                        )
+                        for match in tool_result.output.get("matches") or []:
+                            citation = match.get("citation")
+                            if not citation:
+                                continue
+                            retrieval_evidence[str(citation)] = {
+                                "path": match.get("path"),
+                                "start_line": match.get("start_line"),
+                                "end_line": match.get("end_line"),
+                                "citation": citation,
+                                "content_sha256": match.get("content_sha256"),
+                                "repository_revision": repository_revision,
+                            }
                     messages.append(
                         {
                             "role": "tool",
@@ -245,7 +264,12 @@ class AgentRunner:
             try:
                 raw = json.loads(response.content or "")
                 structured = output_model.model_validate(raw)
-            except (json.JSONDecodeError, ValidationError) as exc:
+                self._validate_retrieval_evidence(
+                    structured,
+                    retrieval_called=retrieval_called,
+                    available=retrieval_evidence,
+                )
+            except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 if schema_repaired:
                     return AgentInvocation(
                         AgentResult(
@@ -286,3 +310,31 @@ class AgentRunner:
                 ),
                 budget,
             )
+
+    @staticmethod
+    def _validate_retrieval_evidence(
+        structured: BaseModel,
+        *,
+        retrieval_called: bool,
+        available: dict[str, dict[str, Any]],
+    ) -> None:
+        """Reject citations that were not returned by this invocation's retriever."""
+
+        if not retrieval_called:
+            return
+        evidence = getattr(structured, "evidence", [])
+        if available and not evidence:
+            raise ValueError(
+                "repo-retrieval returned matches but final output contains no evidence"
+            )
+        for item in evidence:
+            payload = item.model_dump(mode="json")
+            expected = available.get(payload["citation"])
+            if expected is None:
+                raise ValueError(
+                    f"evidence citation was not returned by repo-retrieval: {payload['citation']}"
+                )
+            if payload != expected:
+                raise ValueError(
+                    f"evidence does not match retrieved content: {payload['citation']}"
+                )

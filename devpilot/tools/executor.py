@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from devpilot.domain.models import Replacement, WorkspaceRef
 from devpilot.errors import PolicyDeniedError, ToolExecutionError
@@ -55,7 +55,15 @@ class KnowledgeExtractInput(ToolInput):
 
 class RepoRetrievalInput(ToolInput):
     query: str = Field(min_length=1, max_length=2000)
+    chunk_lines: int = Field(default=40, ge=5, le=200)
+    overlap_lines: int = Field(default=10, ge=0, le=199)
     max_chunks: int = Field(default=8, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self):
+        if self.overlap_lines >= self.chunk_lines:
+            raise ValueError("overlap_lines must be smaller than chunk_lines")
+        return self
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,7 @@ class ToolSpec:
     retry_policy: Literal["NEVER", "BACKOFF"] = "NEVER"
     max_retries: int = 0
     allowed_agents: tuple[str, ...] = ()
+    observation_type: Literal["tool", "retriever"] = "tool"
 
     def json_schema(self) -> dict[str, Any]:
         schema = self.input_model.model_json_schema()
@@ -149,8 +158,13 @@ class ToolExecutor:
         idempotency_key: str | None = None,
         node: str | None = None,
     ) -> ToolResult:
+        try:
+            observation_type = self.registry.get(name).observation_type
+        except PolicyDeniedError:
+            observation_type = "tool"
         with telemetry.tool_observation(
             name=name,
+            observation_type=observation_type,
             agent_id=agent_id,
             operation_id=operation_id,
             node=node or "",
@@ -173,7 +187,22 @@ class ToolExecutor:
                     status_message=f"{type(exc).__name__}: {exc}",
                 )
                 raise
-            observation.update(output=result.output, metadata={"attempts": result.attempts})
+            metadata: dict[str, Any] = {"attempts": result.attempts}
+            if name == "repo-retrieval":
+                coverage = result.output.get("coverage") or {}
+                metadata.update(
+                    {
+                        "repository_revision": result.output.get(
+                            "repository_revision"
+                        ),
+                        "scanned_files": coverage.get("scanned_files"),
+                        "total_chunks": result.output.get("total_chunks"),
+                        "selected_chunks": len(result.output.get("matches") or []),
+                        "corpus_truncated": coverage.get("truncated"),
+                        "result_truncated": result.output.get("result_truncated"),
+                    }
+                )
+            observation.update(output=result.output, metadata=metadata)
         return result
 
     def _execute(
@@ -253,6 +282,8 @@ def _legacy_repo_handler(skill_name: str) -> Callable[[BaseModel, WorkspaceRef],
     def handler(model: BaseModel, workspace: WorkspaceRef) -> dict[str, Any]:
         payload = model.model_dump(exclude={"workspace_id"})
         payload["repo_path"] = workspace.worktree_ref
+        if skill_name == "repo-retrieval":
+            payload["repository_revision"] = workspace.current_revision
         result = run_skill(skill_name, payload)
         if result.get("status") != "ok":
             raise ToolExecutionError("SKILL_FAILED", result.get("error", f"{skill_name} failed"))
@@ -388,7 +419,15 @@ def build_default_registry() -> ToolRegistry:
     registry.register(ToolSpec("risk-assessment", RiskAssessmentInput, _risk_handler))
     registry.register(ToolSpec("test-execution", TestExecutionInput, _test_handler, retry_policy="BACKOFF", max_retries=1))
     registry.register(ToolSpec("knowledge-extract", KnowledgeExtractInput, _knowledge_handler, allowed_agents=("review",)))
-    registry.register(ToolSpec("repo-retrieval", RepoRetrievalInput, _legacy_repo_handler("repo-retrieval"), allowed_agents=("planning", "diagnosis")))
+    registry.register(
+        ToolSpec(
+            "repo-retrieval",
+            RepoRetrievalInput,
+            _legacy_repo_handler("repo-retrieval"),
+            allowed_agents=("planning", "diagnosis"),
+            observation_type="retriever",
+        )
+    )
     return registry
 
 

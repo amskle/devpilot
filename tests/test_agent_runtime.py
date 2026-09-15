@@ -1,4 +1,6 @@
 from decimal import Decimal
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 
@@ -103,6 +105,138 @@ def test_tool_round_limit_requests_one_tool_free_final_response(tmp_path):
     assert result.execution_budget["tool_calls_used"] == 0
     assert gateway.calls[-1]["tools"] == []
     assert "tool-round limit" in gateway.calls[-1]["messages"][-1]["content"]
+
+
+def test_agent_repo_retrieval_returns_revision_bound_citations(tmp_path):
+    content = "def process_payment():\n    return 'ok'\n"
+    (tmp_path / "payment.py").write_text(content, encoding="utf-8")
+    digest = hashlib.sha256(content.rstrip("\n").encode("utf-8")).hexdigest()
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [
+                        {
+                            "name": "repo-retrieval",
+                            "arguments": {
+                                "query": "process payment",
+                                "chunk_lines": 20,
+                                "overlap_lines": 5,
+                            },
+                        }
+                    ]
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "evidence collected",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                        "risks": [],
+                        "evidence": [
+                            {
+                                "path": "payment.py",
+                                "start_line": 1,
+                                "end_line": 2,
+                                "citation": "payment.py:1-2",
+                                "content_sha256": digest,
+                                "repository_revision": "a",
+                            }
+                        ],
+                    }
+                ),
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    result = runner.invoke(
+        _spec(allowed_tools=("repo-retrieval",)),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    tool_message = next(
+        message
+        for message in gateway.calls[1]["messages"]
+        if message["role"] == "tool"
+    )
+    evidence = json.loads(tool_message["content"])
+    assert result.result.status == "ok"
+    assert evidence["repository_revision"] == "a"
+    assert evidence["matches"][0]["citation"] == "payment.py:1-2"
+    assert len(evidence["matches"][0]["content_sha256"]) == 64
+
+
+def test_agent_repairs_citation_not_returned_by_retriever(tmp_path):
+    content = "def process_payment():\n    return 'ok'"
+    (tmp_path / "payment.py").write_text(content, encoding="utf-8")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    valid_evidence = {
+        "path": "payment.py",
+        "start_line": 1,
+        "end_line": 2,
+        "citation": "payment.py:1-2",
+        "content_sha256": digest,
+        "repository_revision": "a",
+    }
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [{"name": "repo-retrieval", "arguments": {"query": "process payment"}}]
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "bad citation",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                        "risks": [],
+                        "evidence": [
+                            {
+                                **valid_evidence,
+                                "path": "invented.py",
+                                "citation": "invented.py:1-2",
+                            }
+                        ],
+                    }
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "fixed citation",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                        "risks": [],
+                        "evidence": [valid_evidence],
+                    }
+                ),
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    result = runner.invoke(
+        _spec(allowed_tools=("repo-retrieval",)),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    assert result.result.structured_output["evidence"] == [valid_evidence]
+    assert gateway.call_count("planning") == 3
+    assert "was not returned" in gateway.calls[-1]["messages"][-1]["content"]
+
+
+def test_repo_retrieval_schema_exposes_supported_chunk_controls():
+    schema = build_default_registry().schemas(
+        ("repo-retrieval",), expose_runtime_fields=False
+    )[0]["function"]["parameters"]
+
+    assert {"query", "chunk_lines", "overlap_lines", "max_chunks"}.issubset(
+        schema["properties"]
+    )
 
 
 def test_unauthorized_tool_is_rejected_before_handler(tmp_path):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime
@@ -35,6 +36,9 @@ from devpilot.services.pricing import PricingCatalog
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore, default_data_dir
 from devpilot.tools.executor import ToolExecutor, build_default_registry
 from devpilot.workspace import WorkspaceManager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TaskRuntimeCore:
@@ -220,9 +224,16 @@ class TaskRuntimeCore:
             return state
 
     def _record_alerts(self, state: GraphState) -> GraphState:
-        """Derive alerts from a settled state without mutating it or its events."""
+        """Best-effort alert projection that never replaces a task result."""
 
-        self.alert_service.evaluate_and_store(state)
+        try:
+            self.alert_service.evaluate_and_store(state)
+        except Exception:
+            LOGGER.exception(
+                "Alert projection failed for task %s run %s; task result is preserved",
+                state["task_id"],
+                state["run_id"],
+            )
         return state
 
     def _trace_identity(

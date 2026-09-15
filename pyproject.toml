@@ -35,6 +35,9 @@ devpilot = "devpilot.cli:main"
 include = ["devpilot*", "runtime*", "shared_state*", "skills*"]
 exclude = ["demo*", "tests*", "agentteams*", "out*"]
 
+[tool.setuptools.package-data]
+skills = ["*/metadata.yaml", "*/SKILL.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

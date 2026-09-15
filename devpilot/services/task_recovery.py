@@ -79,6 +79,7 @@ class TaskRecoveryCommands:
         self.control.confirm_checkpoint(
             task_id, state["run_id"], updated["state_revision"]
         )
+        self._record_alerts(updated)
         if idempotency_key:
             self.control.save_idempotent_result(
                 task_id, "rollback", idempotency_key, updated

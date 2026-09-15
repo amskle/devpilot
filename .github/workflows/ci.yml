@@ -22,6 +22,12 @@ jobs:
           python -m pip install --no-build-isolation --no-deps -e .
       - name: Dependency smoke
         run: python -c "import langgraph; import langgraph.checkpoint.sqlite; import pydantic"
+      - name: Build and smoke-test wheel
+        run: |
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          cd /tmp
+          python -c "from devpilot.service import TaskService; from skills.repo_retrieval.executor import run; from skills.registry import skill_metadata_path; assert skill_metadata_path('repo-retrieval').is_file()"
       - name: Run tests
         run: python -m pytest skills tests -q
 

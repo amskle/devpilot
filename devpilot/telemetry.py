@@ -6,7 +6,7 @@ manager so the runtime behaves exactly as it did before instrumentation.
 
 Trace shape produced for one graph invocation (one ``run_id``)::
 
-    devpilot-task-run                  # root span; owns the trace input/output
+    devpilot-task-run                  # root agent; owns the trace input/output
     |- workspace-setup
     |- build-baseline-context
     |- generate-plan
@@ -31,11 +31,20 @@ import logging
 import os
 import sys
 from contextlib import contextmanager
-from typing import Any, Iterator, Protocol
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any, Iterator, Literal, Protocol
 
 from devpilot.events.redaction import sanitize_event_value
 
 LOGGER = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _application_version() -> str:
+    try:
+        return version("devpilot-infra")
+    except PackageNotFoundError:
+        return "unknown"
 
 __all__ = [
     "agent_observation",
@@ -266,11 +275,12 @@ def task_run_observation(
         "run_id": run_id,
         "model": model,
         "revision": revision,
+        "app_version": _application_version(),
         "parent_run_id": parent_run_id,
         "resumed": resumed,
     }
     with _observation(
-        as_type="span",
+        as_type="agent",
         name="devpilot-task-run",
         input=request,
         metadata=metadata,
@@ -323,15 +333,16 @@ def agent_observation(
 def tool_observation(
     *,
     name: str,
+    observation_type: Literal["tool", "retriever"] = "tool",
     agent_id: str | None,
     operation_id: str,
     node: str = "",
     inputs: dict[str, Any],
 ) -> Iterator[Any]:
-    """Observation for one physical tool execution, typed `tool`."""
+    """Observation for one physical tool or read-only retrieval execution."""
 
     with _observation(
-        as_type="tool",
+        as_type=observation_type,
         name=name,
         input=inputs,
         metadata={"agent_id": agent_id, "operation_id": operation_id, "node": node},

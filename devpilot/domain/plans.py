@@ -15,6 +15,8 @@ def _content_hash(draft: PlanDraft) -> str:
         "acceptance_criteria": draft.acceptance_criteria,
         "risks": draft.risks,
     }
+    if draft.evidence:
+        content["evidence"] = [item.to_state_dict() for item in draft.evidence]
     encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -43,6 +45,7 @@ def build_plan_document(
         tasks=draft.tasks,
         acceptance_criteria=draft.acceptance_criteria,
         risks=draft.risks,
+        evidence=draft.evidence,
         content_hash=_content_hash(draft),
     )
 

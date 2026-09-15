@@ -91,6 +91,43 @@ def test_node_observation_runs_node_and_records_output_before_end(monkeypatch):
     }]
 
 
+def test_retrieval_observation_uses_specific_type_and_coverage_metadata(
+    tmp_path, monkeypatch
+):
+    from devpilot.domain.models import ExecutionBudget, WorkspaceRef
+    from devpilot.tools.executor import ToolExecutor, build_default_registry
+
+    (tmp_path / "app.py").write_text("needle = True\n", encoding="utf-8")
+    workspace = WorkspaceRef(
+        workspace_id="ws",
+        repository_id="repo",
+        worktree_ref=str(tmp_path),
+        baseline_revision="abc123",
+        current_revision="abc123",
+        lease_owner="run",
+        lease_expires_at="2099-01-01T00:00:00+00:00",
+    )
+    client = RecordingClient()
+    monkeypatch.setattr(telemetry, "_client", lambda: client)
+
+    ToolExecutor(build_default_registry()).execute(
+        "repo-retrieval",
+        {"workspace_id": "ws", "query": "needle"},
+        workspace=workspace,
+        allowed_tools=("repo-retrieval",),
+        agent_id="planning",
+        operation_id="retrieve-once",
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    observation = client.observations[0]
+    assert observation["as_type"] == "retriever"
+    assert observation["name"] == "repo-retrieval"
+    assert observation["metadata"]["repository_revision"] == "abc123"
+    assert observation["metadata"]["selected_chunks"] == 1
+    assert observation["metadata"]["corpus_truncated"] is False
+
+
 def test_mask_removes_secrets_without_changing_model_inputs(monkeypatch):
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test-sensitive")
     source = {"api_key": "secret", "messages": [{"content": "copied sk-lf-test-sensitive Bearer private-token-123"}]}
@@ -141,12 +178,19 @@ def test_traced_graph_records_actual_task_model_and_final_state(tmp_path, monkey
     try:
         state = service.create_task(make_test_repo(tmp_path / "source"), "inspect this fixture", model="selected-model")
         root = next(item for item in client.observations if item["name"] == "devpilot-task-run")
+        assert root["as_type"] == "agent"
         assert root["metadata"]["model"] == "selected-model"
+        assert root["metadata"]["app_version"]
         assert root["output"]["status"] == state["status"] == "COMPLETED_NO_CHANGES"
         assert root["input"] == "inspect this fixture"
         assert len(root["metadata"]["baseline_revision"]) == 40
         assert all(item["ended"] for item in client.observations)
-        assert len([item for item in client.observations if item["as_type"] == "agent"]) == 3
+        child_agents = [
+            item
+            for item in client.observations
+            if item["as_type"] == "agent" and item["name"] != "devpilot-task-run"
+        ]
+        assert len(child_agents) == 3
         gateway.assert_consumed()
     finally:
         service.close()

@@ -222,12 +222,13 @@ class SQLiteControlStore(
               evidence_json TEXT NOT NULL,
               fingerprint TEXT NOT NULL,
               created_at TEXT NOT NULL,
-              UNIQUE(task_id, fingerprint)
+              UNIQUE(task_id, run_id, fingerprint)
             );
             CREATE INDEX IF NOT EXISTS alerts_task
               ON alerts(task_id, created_at);
             """
         )
+        self._migrate_alert_deduplication_scope()
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(task_projection)").fetchall()}
         if "checkpoint_run_id" not in columns:
             self._conn.execute("ALTER TABLE task_projection ADD COLUMN checkpoint_run_id TEXT")
@@ -260,6 +261,46 @@ class SQLiteControlStore(
                    ADD COLUMN prompt_digest TEXT NOT NULL DEFAULT ''"""
             )
         self._conn.commit()
+
+    def _migrate_alert_deduplication_scope(self) -> None:
+        """Upgrade the preview alert schema from task-wide to run-wide dedupe."""
+
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='alerts'"
+        ).fetchone()
+        table_sql = "" if row is None else "".join(str(row["sql"]).split()).lower()
+        if "unique(task_id,fingerprint)" not in table_sql:
+            return
+        with self._immediate_transaction():
+            self._conn.execute("DROP TABLE IF EXISTS alerts_v2")
+            self._conn.execute("DROP INDEX IF EXISTS alerts_task")
+            self._conn.execute(
+                """CREATE TABLE alerts_v2 (
+              alert_id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              rule TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              evidence_json TEXT NOT NULL,
+              fingerprint TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE(task_id, run_id, fingerprint)
+            )"""
+            )
+            self._conn.execute(
+                """INSERT INTO alerts_v2
+              (alert_id, task_id, run_id, rule, severity, summary,
+               evidence_json, fingerprint, created_at)
+            SELECT alert_id, task_id, run_id, rule, severity, summary,
+                   evidence_json, fingerprint, created_at
+              FROM alerts"""
+            )
+            self._conn.execute("DROP TABLE alerts")
+            self._conn.execute("ALTER TABLE alerts_v2 RENAME TO alerts")
+            self._conn.execute(
+                "CREATE INDEX alerts_task ON alerts(task_id, created_at)"
+            )
 
     @contextmanager
     def _immediate_transaction(self):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -122,11 +123,37 @@ class AgentResult(StrictModel):
     error: dict[str, Any] | None = None
 
 
+class EvidenceRef(StrictModel):
+    """Repository evidence bound to exact lines, content and revision."""
+
+    path: str = Field(min_length=1)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    citation: str = Field(min_length=1)
+    content_sha256: str = Field(min_length=64, max_length=64)
+    repository_revision: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_reference(self):
+        normalized = self.path.replace("\\", "/")
+        path = PurePosixPath(normalized)
+        if self.path != normalized or path.is_absolute() or ".." in path.parts:
+            raise ValueError("evidence path must be a normalized relative path")
+        if self.end_line < self.start_line:
+            raise ValueError("evidence end_line must not precede start_line")
+        if self.citation != f"{self.path}:{self.start_line}-{self.end_line}":
+            raise ValueError("evidence citation must match path and line range")
+        if any(character not in "0123456789abcdef" for character in self.content_sha256):
+            raise ValueError("evidence content_sha256 must be a lowercase SHA-256 digest")
+        return self
+
+
 class PlanDraft(StrictModel):
     summary: str
     tasks: list[dict[str, Any]]
     acceptance_criteria: list[str]
     risks: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
 
 
 class PlanDocument(StrictModel):
@@ -144,6 +171,7 @@ class PlanDocument(StrictModel):
     tasks: list[dict[str, Any]]
     acceptance_criteria: list[str]
     risks: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
     content_hash: str
 
     @model_validator(mode="after")
@@ -198,6 +226,7 @@ class DiagnosisSummary(StrictModel):
     outcome: Literal["NO_ACTION_REQUIRED", "ISSUE_FOUND", "PLAN_INVALID"]
     summary: str
     issues: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
 
 
 class Replacement(StrictModel):
