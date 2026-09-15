@@ -18,6 +18,8 @@ from devpilot.api.schemas.controls import (
 from devpilot.api.schemas.evidence import DiffResponse, EventTicketResponse, PlanDocumentResponse
 from devpilot.api.schemas.tasks import (
     CreateTaskRequest,
+    DeleteTasksRequest,
+    DeleteTasksResponse,
     ModelProfileResponse,
     TaskListResponse,
     TaskStateResponse,
@@ -32,6 +34,8 @@ __all__ = [
     "ChangeRequestBody",
     "ControlTargetRequest",
     "CreateTaskRequest",
+    "DeleteTasksRequest",
+    "DeleteTasksResponse",
     "DiffResponse",
     "ERROR_RESPONSES",
     "EventTicketResponse",

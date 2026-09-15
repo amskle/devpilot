@@ -2,7 +2,11 @@ import { fireEvent, render, screen, within } from "@testing-library/vue";
 import { describe, expect, it, vi } from "vitest";
 import { budget } from "./fixtures";
 
-const apiMock = vi.hoisted(() => ({ listTasks: vi.fn() }));
+const apiMock = vi.hoisted(() => ({
+  listTasks: vi.fn(),
+  deleteTask: vi.fn(),
+  deleteTasks: vi.fn(),
+}));
 
 vi.mock("@/api/client", () => ({
   api: apiMock,
@@ -12,6 +16,51 @@ vi.mock("@/api/client", () => ({
 import TaskSidebar from "@/components/TaskSidebar.vue";
 
 describe("TaskSidebar", () => {
+  it("selects and deletes multiple terminal tasks in one request", async () => {
+    const tasks = [
+      { task_id: "task_1", status: "COMPLETED", request: "旧任务一", execution_budget: budget },
+      { task_id: "task_2", status: "FAILED", request: "旧任务二", execution_budget: budget },
+      { task_id: "task_3", status: "RUNNING", request: "运行中任务", execution_budget: budget },
+    ];
+    apiMock.listTasks.mockReset();
+    apiMock.deleteTasks.mockReset();
+    apiMock.listTasks.mockResolvedValue({ items: tasks, next_cursor: null });
+    apiMock.deleteTasks.mockResolvedValue({ deleted_task_ids: ["task_1", "task_2"] });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(TaskSidebar, { global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } } });
+
+    await screen.findByText("旧任务一");
+    await fireEvent.click(screen.getByRole("button", { name: "查看更多" }));
+    await screen.findByRole("dialog", { name: "查询任务历史" });
+    await fireEvent.click(screen.getByRole("checkbox", { name: "全选本页可删除任务" }));
+    await fireEvent.click(screen.getByRole("button", { name: "删除所选（2）" }));
+
+    expect(apiMock.deleteTasks).toHaveBeenCalledWith(["task_1", "task_2"]);
+    expect(screen.queryByText("旧任务一")).toBeNull();
+    expect(screen.queryByText("旧任务二")).toBeNull();
+    expect(screen.getByText("运行中任务")).toBeTruthy();
+  });
+
+  it("permanently deletes a terminal task after confirmation", async () => {
+    apiMock.listTasks.mockReset();
+    apiMock.deleteTask.mockReset();
+    apiMock.listTasks.mockResolvedValue({
+      items: [{ task_id: "task_old", status: "COMPLETED", request: "旧任务", execution_budget: budget }],
+      next_cursor: null,
+    });
+    apiMock.deleteTask.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(TaskSidebar, { global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } } });
+
+    await screen.findByText("旧任务");
+    await fireEvent.click(screen.getByRole("button", { name: "查看更多" }));
+    await screen.findByRole("dialog", { name: "查询任务历史" });
+    await fireEvent.click(screen.getByRole("button", { name: "删除任务 旧任务" }));
+
+    expect(apiMock.deleteTask).toHaveBeenCalledWith("task_old");
+    expect(screen.queryByRole("button", { name: "删除任务 旧任务" })).toBeNull();
+  });
+
   it("shows ten recent tasks and searches older tasks with pagination in a dialog", async () => {
     const tasks = Array.from({ length: 10 }, (_, index) => ({
       task_id: `task_${index}`, status: "COMPLETED", request: `最近任务 ${index}`, execution_budget: budget,

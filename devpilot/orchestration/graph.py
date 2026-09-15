@@ -158,7 +158,14 @@ def _workspace(state: GraphState) -> WorkspaceRef:
 
 
 def _raise_agent_error(invocation: Any) -> None:
-    error = RuntimeError(invocation.result.error)
+    error_payload = (
+        invocation.result.error if isinstance(invocation.result.error, dict) else {}
+    )
+    code = str(error_payload.get("code") or "")
+    message = str(error_payload.get("message") or invocation.result.summary)
+    error = RuntimeError(f"{code}: {message}" if code else message)
+    if code:
+        error.code = code
     error.execution_budget = invocation.execution_budget
     raise error
 
@@ -581,6 +588,53 @@ def build_graph(runtime: GraphRuntime, checkpointer: Any):
             return "".join(diffs), files, operations, budget
 
         invocations = [invoke_patch_agent(state["execution_budget"])]
+        if (
+            invocations[-1].result.structured_output.get("outcome")
+            == "NO_CHANGE_REQUIRED"
+        ):
+            draft_summary = str(
+                invocations[-1].result.structured_output.get("summary", "")
+            )
+            failure = FailureRecord(
+                failure_id=f"failure_{uuid.uuid4().hex[:16]}",
+                iteration=ExecutionBudget.from_state_dict(
+                    invocations[-1].execution_budget
+                ).iterations_used,
+                category="PATCH",
+                error_code="PATCH_NO_CHANGE_REQUIRED",
+                summary=(
+                    "Patch Generation declared that the diagnosed issue requires no "
+                    f"repository source change: {draft_summary}"
+                )[:1000],
+                symptom_fingerprint=hashlib.sha256(
+                    f"PATCH_NO_CHANGE_REQUIRED:{draft_summary}".encode()
+                ).hexdigest(),
+                change_fingerprint=None,
+                retry_policy="NEVER",
+                recovery_action="HUMAN",
+                agent_actionable=False,
+                related_files=[],
+                artifact_refs=[],
+                occurred_at=runtime.clock.now().isoformat(),
+            )
+            return _merge_transition(
+                runtime,
+                state,
+                {
+                    "latest_failure": failure.to_state_dict(),
+                    "status": TaskStatus.WAITING_HUMAN_INTERVENTION.value,
+                    "pause_reason": "PATCH_NO_CHANGE_REQUIRED",
+                    "execution_budget": invocations[-1].execution_budget,
+                },
+                node="patch_generation",
+                event_type="human_intervention_required",
+                allowed={"latest_failure", "status", "pause_reason", "execution_budget"},
+                payload={
+                    "reason": "PATCH_NO_CHANGE_REQUIRED",
+                    "agent_summary": invocations[-1].result.summary,
+                    "token_usage": invocations[-1].result.token_usage,
+                },
+            )
         repair_trigger: dict[str, Any] | None = None
         try:
             patch, files, tool_operations, budget = materialize_patch(

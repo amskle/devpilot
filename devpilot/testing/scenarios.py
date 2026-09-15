@@ -76,6 +76,12 @@ def legacy_scenario(repo: Path) -> ScriptedFakeModelGateway:
     }
     if operations:
         scenario["patch_generation"] = [
-            ModelResponse.final({"summary": f"Apply {len(operations)} supported fixes", "operations": operations})
+            ModelResponse.final(
+                {
+                    "outcome": "PATCH",
+                    "summary": f"Apply {len(operations)} supported fixes",
+                    "operations": operations,
+                }
+            )
         ]
     return ScriptedFakeModelGateway(scenario)

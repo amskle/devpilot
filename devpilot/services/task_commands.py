@@ -21,6 +21,46 @@ from devpilot.orchestration.graph import build_graph
 class TaskCommands:
     """Implement user-issued task control and replanning commands."""
 
+    def delete_tasks(self, task_ids: list[str]) -> list[str]:
+        """Permanently remove multiple terminal tasks after full preflight."""
+
+        if not task_ids:
+            raise ValueError("at least one task ID is required")
+        if len(task_ids) > 200:
+            raise ValueError("at most 200 tasks can be deleted at once")
+        normalized = [task_id.strip() for task_id in task_ids]
+        if any(not task_id for task_id in normalized):
+            raise ValueError("task IDs must not be empty")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("task IDs must be unique")
+        for task_id in normalized:
+            projection = self.control.get_task(task_id)
+            if projection is None:
+                raise KeyError(task_id)
+            if projection["status"] not in TERMINAL_STATUSES:
+                raise StateConflictError(
+                    f"only terminal tasks can be deleted: {task_id}"
+                )
+        for task_id in normalized:
+            self.delete_task(task_id)
+        return normalized
+
+    def delete_task(self, task_id: str) -> list[str]:
+        """Permanently remove a terminal task and all of its local history."""
+
+        projection = self.control.get_task(task_id)
+        if projection is None:
+            raise KeyError(task_id)
+        if projection["status"] not in TERMINAL_STATUSES:
+            raise StateConflictError("only terminal tasks can be deleted")
+        run_ids = self.control.task_run_ids(task_id)
+        self.workspace_manager.delete_task(task_id)
+        self.artifacts.delete_task(task_id)
+        for run_id in run_ids:
+            self.checkpointer.delete_thread(run_id)
+        self.control.delete_task(task_id)
+        return run_ids
+
     def decide_approval(
         self,
         task_id: str,

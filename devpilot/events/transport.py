@@ -96,6 +96,13 @@ class RedisStreamConsumer:
             return "0-0"
         return self._text(response[0][0])
 
+    def delete_streams(self, task_id: str, run_ids: list[str]) -> None:
+        """Remove live-event streams after their durable task is deleted."""
+
+        names = [self.stream_name(task_id, run_id) for run_id in run_ids]
+        if names:
+            self.client.delete(*names)
+
     @staticmethod
     def _text(value: Any) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)

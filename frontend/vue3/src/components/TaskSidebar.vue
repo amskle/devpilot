@@ -7,6 +7,7 @@ import { compactId, formatDate } from "@/domain/format";
 import type { TaskSummary } from "@/domain/types";
 
 const props = defineProps<{ currentTaskId?: string }>();
+const emit = defineEmits<{ deleted: [taskIds: string[]] }>();
 
 const tasks = ref<TaskSummary[]>([]);
 const loading = ref(true);
@@ -37,6 +38,11 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+function handleDeleted(taskIds: string[]): void {
+  void load();
+  emit("deleted", taskIds);
 }
 
 watch(() => props.currentTaskId, () => {
@@ -100,5 +106,5 @@ onMounted(load);
 
     <footer class="sidebar-foot"><i aria-hidden="true" /><span>事件持久化 · 控制命令显式执行</span></footer>
   </aside>
-  <TaskHistoryDialog v-if="historyOpen" :current-task-id="currentTaskId" @close="historyOpen = false" />
+  <TaskHistoryDialog v-if="historyOpen" :current-task-id="currentTaskId" @close="historyOpen = false" @deleted="handleDeleted" />
 </template>

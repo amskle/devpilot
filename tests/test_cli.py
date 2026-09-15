@@ -127,6 +127,24 @@ def test_phase7_replay_commands_parse_targets():
     assert fork.recovery_point_id == "recovery"
 
 
+def test_task_delete_requires_explicit_confirmation_flag():
+    parsed = build_parser().parse_args(
+        [
+            "task",
+            "delete",
+            "--task-id",
+            "task_1",
+            "--task-id",
+            "task_2",
+            "--yes",
+        ]
+    )
+
+    assert parsed.command == "delete"
+    assert parsed.task_id == ["task_1", "task_2"]
+    assert parsed.yes is True
+
+
 def test_phase7_evaluation_commands_parse_comparison():
     run = build_parser().parse_args(
         [

@@ -7,6 +7,32 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("ApiClient control contract", () => {
+  it("deletes a task using the REST delete endpoint", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const client = new ApiClient({ fetchImpl, tokenProvider: () => "token" });
+
+    await expect(client.deleteTask("task/one")).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/tasks/task%2Fone",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("deletes multiple tasks in one validated request", async () => {
+    const result = { deleted_task_ids: ["task_1", "task_2"] };
+    const fetchImpl = vi.fn().mockResolvedValue(response(result));
+    const client = new ApiClient({ fetchImpl, tokenProvider: () => "token" });
+
+    await expect(client.deleteTasks(result.deleted_task_ids)).resolves.toEqual(result);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/tasks",
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ task_ids: result.deleted_task_ids }),
+      }),
+    );
+  });
+
   it("notifies the application when the API requires a bearer token", async () => {
     const listener = vi.fn();
     window.addEventListener(AUTH_REQUIRED_EVENT, listener);

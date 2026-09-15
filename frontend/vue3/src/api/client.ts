@@ -167,6 +167,19 @@ export class ApiClient {
     return this.request<TaskState>(`/tasks/${encodeURIComponent(taskId)}`);
   }
 
+  deleteTask(taskId: string): Promise<void> {
+    return this.request<void>(`/tasks/${encodeURIComponent(taskId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  deleteTasks(taskIds: string[]): Promise<{ deleted_task_ids: string[] }> {
+    return this.request<{ deleted_task_ids: string[] }>("/tasks", {
+      method: "DELETE",
+      body: JSON.stringify({ task_ids: taskIds }),
+    });
+  }
+
   listRepositoryDirectories(path?: string): Promise<RepositoryDirectories> {
     const search = new URLSearchParams();
     if (path) search.set("path", path);

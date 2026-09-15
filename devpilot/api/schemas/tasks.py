@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from devpilot.api.schemas.common import ApiModel
 from devpilot.domain.models import ExecutionBudget, TaskStatus
@@ -35,6 +35,28 @@ class CreateTaskRequest(ApiModel):
         description="Optional per-task model; the selected value is frozen in the pricing snapshot",
         examples=["gpt-5-mini"],
     )
+
+
+class DeleteTasksRequest(ApiModel):
+    task_ids: list[str] = Field(
+        min_length=1,
+        max_length=200,
+        description="Unique task IDs to delete in one request",
+    )
+
+    @field_validator("task_ids")
+    @classmethod
+    def validate_task_ids(cls, value: list[str]) -> list[str]:
+        normalized = [task_id.strip() for task_id in value]
+        if any(not task_id or len(task_id) > 255 for task_id in normalized):
+            raise ValueError("task IDs must contain between 1 and 255 characters")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("task IDs must be unique")
+        return normalized
+
+
+class DeleteTasksResponse(ApiModel):
+    deleted_task_ids: list[str]
 
 
 class ModelProfileResponse(ApiModel):

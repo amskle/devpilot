@@ -60,6 +60,7 @@ def _approval_gateway(runs: int = 2) -> ScriptedFakeModelGateway:
         "issues": [{"issue": "password-helper"}],
     }
     patch = {
+        "outcome": "PATCH",
         "summary": "change password helper",
         "operations": [
             {

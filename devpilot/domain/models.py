@@ -219,11 +219,18 @@ class PatchOperation(StrictModel):
 
 
 class PatchDraft(StrictModel):
+    outcome: Literal["PATCH", "NO_CHANGE_REQUIRED"]
     summary: str
-    operations: list[PatchOperation] = Field(min_length=1)
+    operations: list[PatchOperation]
 
     @model_validator(mode="after")
-    def validate_unique_target_files(self):
+    def validate_outcome_consistency(self):
+        if self.outcome == "PATCH" and not self.operations:
+            raise ValueError("PatchDraft with outcome PATCH requires at least one operation")
+        if self.outcome == "NO_CHANGE_REQUIRED" and self.operations:
+            raise ValueError(
+                "PatchDraft with outcome NO_CHANGE_REQUIRED must not contain operations"
+            )
         normalized = [
             operation.target_file.replace("\\", "/")
             for operation in self.operations

@@ -27,6 +27,10 @@ def _diagnosis_route(state: GraphState) -> str:
     return "patch_generation"
 
 
+def _patch_route(state: GraphState) -> str:
+    return "end" if state["status"] != TaskStatus.RUNNING.value else "risk_assessment"
+
+
 def _risk_route(state: GraphState) -> str:
     if state["status"] == TaskStatus.POLICY_REJECTED.value:
         return "end"
@@ -87,7 +91,11 @@ def compile_graph(
             "patch_generation": "patch_generation",
         },
     )
-    builder.add_edge("patch_generation", "risk_assessment")
+    builder.add_conditional_edges(
+        "patch_generation",
+        _patch_route,
+        {"end": END, "risk_assessment": "risk_assessment"},
+    )
     builder.add_conditional_edges(
         "risk_assessment",
         _risk_route,

@@ -70,6 +70,7 @@ def _change_request_gateway() -> ScriptedFakeModelGateway:
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "change password helper",
                         "operations": [
                             {

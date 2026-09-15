@@ -23,8 +23,8 @@ from devpilot.api.schemas import (
     MessageCreateRequest,
     RecoveryControlRequest,
 )
-from devpilot.domain.models import TaskStatus
-from devpilot.errors import PolicyDeniedError
+from devpilot.domain.models import TERMINAL_STATUSES, TaskStatus
+from devpilot.errors import PolicyDeniedError, StateConflictError
 from devpilot.events import RedisStreamConsumer
 from devpilot.service import TaskService
 
@@ -172,6 +172,37 @@ class ControlPlaneService:
     async def task_view(self, task_id: str, principal: Principal) -> dict[str, Any]:
         self.authorize(principal, task_id)
         return await run_in_threadpool(self.tasks.task_view, task_id)
+
+    async def delete_task(self, task_id: str, principal: Principal) -> None:
+        await self.delete_tasks([task_id], principal)
+
+    async def delete_tasks(
+        self, task_ids: list[str], principal: Principal
+    ) -> list[str]:
+        run_ids_by_task: dict[str, list[str]] = {}
+        for task_id in task_ids:
+            self.authorize(principal, task_id)
+            projection = self.tasks.control.get_task(task_id)
+            if projection is None:
+                raise KeyError(task_id)
+            if projection["status"] not in TERMINAL_STATUSES:
+                raise StateConflictError(
+                    f"only terminal tasks can be deleted: {task_id}"
+                )
+            run_ids_by_task[task_id] = await run_in_threadpool(
+                self.tasks.control.task_run_ids, task_id
+            )
+        if self.live_events is not None:
+            try:
+                for task_id, run_ids in run_ids_by_task.items():
+                    await run_in_threadpool(
+                        self.live_events.delete_streams, task_id, run_ids
+                    )
+            except Exception as exc:
+                raise SharedStateUnavailableError(
+                    "Redis live event transport is unavailable"
+                ) from exc
+        return await run_in_threadpool(self.tasks.delete_tasks, task_ids)
 
     async def plans(self, task_id: str, principal: Principal) -> list[dict[str, Any]]:
         self.authorize(principal, task_id)

@@ -1,4 +1,5 @@
 import json
+import locale
 import os
 import shlex
 import shutil
@@ -7,12 +8,30 @@ import sys
 from pathlib import Path
 
 
-def _text_tail(value: str | bytes | None, limit: int = 8000) -> str:
-    if value is None:
+def _fallback_encodings() -> tuple[str, ...]:
+    encodings = ["utf-8"]
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            encodings.append(f"cp{ctypes.windll.kernel32.GetOEMCP()}")
+        except (AttributeError, OSError):
+            pass
+    preferred = locale.getpreferredencoding(False)
+    if preferred:
+        encodings.append(preferred)
+    return tuple(dict.fromkeys(encodings))
+
+
+def _decode_output(value: bytes | None, limit: int = 8000) -> str:
+    if not value:
         return ""
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
-    return value[-limit:]
+    for encoding in _fallback_encodings():
+        try:
+            return value.decode(encoding)[-limit:]
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return value.decode("utf-8", errors="replace")[-limit:]
 
 
 def _launch_command(executable: str | Path, *arguments: str) -> list[str] | str:
@@ -77,9 +96,6 @@ def run(inputs: dict) -> dict:
             command,
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=child_env,
             timeout=timeout,
         )
@@ -88,8 +104,8 @@ def run(inputs: dict) -> dict:
             "data": {
                 "passed": proc.returncode == 0,
                 "exit_code": proc.returncode,
-                "stdout": _text_tail(proc.stdout),
-                "stderr": _text_tail(proc.stderr),
+                "stdout": _decode_output(proc.stdout),
+                "stderr": _decode_output(proc.stderr),
             },
         }
     except subprocess.TimeoutExpired as exc:
@@ -98,7 +114,7 @@ def run(inputs: dict) -> dict:
             "data": {
                 "passed": False,
                 "exit_code": -1,
-                "stdout": _text_tail(exc.stdout),
+                "stdout": _decode_output(exc.stdout),
                 "stderr": f"timeout after {timeout}s",
             },
         }

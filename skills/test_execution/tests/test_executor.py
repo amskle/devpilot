@@ -3,7 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from skills.test_execution.executor import _detect_command, run
+from skills.test_execution.executor import _decode_output, _detect_command, run
 
 
 def test_passing_command():
@@ -36,6 +36,25 @@ def test_utf8_output_is_decoded_independently_of_windows_locale():
     assert result["status"] == "ok"
     assert result["data"]["passed"] is True
     assert "测试通过 ✓" in result["data"]["stdout"]
+
+
+def test_oem_encoded_output_decodes_through_locale_fallback(monkeypatch):
+    monkeypatch.setattr(
+        "skills.test_execution.executor._fallback_encodings",
+        lambda: ("utf-8", "gbk"),
+    )
+    message = "'vitest' 不是内部或外部命令"
+
+    assert _decode_output(message.encode("gbk")) == message
+
+
+def test_undecodable_output_is_replaced_instead_of_raising(monkeypatch):
+    monkeypatch.setattr(
+        "skills.test_execution.executor._fallback_encodings",
+        lambda: ("utf-8",),
+    )
+
+    assert _decode_output(b"\xff\xfeA").endswith("A")
 
 
 def test_timeout_output_is_always_json_safe_text():

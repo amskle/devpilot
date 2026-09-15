@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from devpilot.clock import Clock, SystemClock
+from devpilot.domain.models import TERMINAL_STATUSES
 from devpilot.domain.state import GraphState, validate_state
 from devpilot.errors import StateConflictError
 from devpilot.events.models import ExecutionEvent, TraceView
@@ -345,6 +346,57 @@ class SQLiteControlStore(
                 "SELECT subject FROM task_owners WHERE task_id=?", (task_id,)
             ).fetchone()
         return str(row["subject"]) if row else None
+
+    def task_run_ids(self, task_id: str) -> list[str]:
+        """Return every run that contributes durable data to a task."""
+
+        with self._lock:
+            task = self._conn.execute(
+                "SELECT run_id FROM task_projection WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise KeyError(task_id)
+            rows = self._conn.execute(
+                "SELECT DISTINCT run_id FROM execution_events WHERE task_id=?",
+                (task_id,),
+            ).fetchall()
+        return sorted({str(task["run_id"]), *(str(row["run_id"]) for row in rows)})
+
+    def delete_task(self, task_id: str) -> None:
+        """Delete all control-plane records for a terminal task atomically."""
+
+        with self._immediate_transaction():
+            row = self._conn.execute(
+                "SELECT status FROM task_projection WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            if str(row["status"]) not in TERMINAL_STATUSES:
+                raise StateConflictError("only terminal tasks can be deleted")
+            for table in (
+                "event_outbox",
+                "idempotency_keys",
+                "idempotency_inputs",
+                "plan_lifecycles",
+                "plan_documents",
+                "replan_requests",
+                "change_requests",
+                "task_owners",
+                "replay_records",
+            ):
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE task_id=?", (task_id,)
+                )
+            self._conn.execute(
+                "DELETE FROM recovery_forks WHERE source_task_id=? OR target_task_id=?",
+                (task_id, task_id),
+            )
+            self._conn.execute(
+                "DELETE FROM execution_events WHERE task_id=?", (task_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM task_projection WHERE task_id=?", (task_id,)
+            )
 
     def _next_sequence_tx(self, task_id: str, run_id: str) -> int:
         row = self._conn.execute(

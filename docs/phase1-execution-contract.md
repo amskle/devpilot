@@ -32,6 +32,8 @@ Phase 1 没有后台调度器。`task status`、`task approve`、`task reject` �
 
 如果基线测试失败而 Diagnosis 返回 `NO_ACTION_REQUIRED`，任务必须进入 `WAITING_HUMAN_INTERVENTION`，不能错误完成为 `COMPLETED_NO_CHANGES`。Maven 优先使用 PATH 中的 `mvn`，不可用时回退到仓库内的 `mvnw.cmd`/`mvnw`。
 
+`PatchDraft` 必须显式声明 `outcome`：`PATCH` 要求至少一个有效替换；当诊断问题不需要仓库源码变更（例如仅环境或依赖安装）时，Patch Generation 返回 `NO_CHANGE_REQUIRED` 与空 `operations`，任务以 `WAITING_HUMAN_INTERVENTION`（`PATCH_NO_CHANGE_REQUIRED`）暂停而不是契约失败。repair 调用必须保留上一轮结论，只修复 JSON 格式与校验错误；repair 后仍无法通过 Schema 校验时返回 `MODEL_OUTPUT_INVALID`，任务暂停为 `WAITING_HUMAN_INTERVENTION`（failure category `AGENT`）而不是 `FAILED`，保持可恢复。
+
 Skill 扫描器只过滤仓库内部的隐藏路径和构建目录；不得因为数据目录或工作区的父目录名为 `.devpilot` 而跳过整个仓库。Java code-analysis 输出字段声明中的类型/变量映射及有总量上限的带行号源码证据，避免从变量名臆测不存在的类。
 
 ## Legacy 状态投影

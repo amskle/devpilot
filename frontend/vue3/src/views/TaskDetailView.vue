@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
+import { routerKey } from "vue-router";
 import { ApiError, api } from "@/api/client";
 import ApprovalPanel from "@/components/ApprovalPanel.vue";
 import BudgetPanel from "@/components/BudgetPanel.vue";
@@ -18,6 +19,7 @@ import { compactId, formatDate } from "@/domain/format";
 import type { DiffDocument, Message, PlanDocument, RecoveryPoint, TaskState } from "@/domain/types";
 
 const props = defineProps<{ taskId: string }>();
+const router = inject(routerKey, null);
 const state = ref<TaskState | null>(null);
 const plan = ref<PlanDocument | PlanDocument[] | null>(null);
 const diff = ref<DiffDocument | null>(null);
@@ -38,6 +40,16 @@ const tabs = [
   { id: "diff", label: "代码变更" },
   { id: "verification", label: "验证报告" },
 ] as const;
+
+function handleDeleted(taskIds: string[]): void {
+  if (!taskIds.includes(props.taskId)) return;
+  if (router) {
+    void router.push("/");
+    return;
+  }
+  state.value = null;
+  error.value = "任务已删除";
+}
 
 const taskIdRef = computed(() => props.taskId);
 const runIdRef = computed(() => state.value?.run_id ?? "");
@@ -216,7 +228,7 @@ onMounted(load);
 
 <template>
   <div class="workspace-shell">
-    <TaskSidebar :current-task-id="taskId" />
+    <TaskSidebar :current-task-id="taskId" @deleted="handleDeleted" />
 
     <section v-if="loading" class="conversation-workspace page-loading">
       <i aria-hidden="true" /><span>正在恢复任务控制状态…</span>

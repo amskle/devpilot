@@ -98,13 +98,13 @@ def test_replan_reuses_planning_agent_and_atomically_switches_version(tmp_path):
             ],
             "patch_generation": [
                 ModelResponse.final(
-                    {"summary": "one to two", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 1", "new": "value = 2", "occurrence": 1}]}]}
+                    {"outcome": "PATCH", "summary": "one to two", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 1", "new": "value = 2", "occurrence": 1}]}]}
                 ),
                 ModelResponse.final(
-                    {"summary": "two to four", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 4", "occurrence": 1}]}]}
+                    {"outcome": "PATCH", "summary": "two to four", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 4", "occurrence": 1}]}]}
                 ),
                 ModelResponse.final(
-                    {"summary": "two to three", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 3", "occurrence": 1}]}]}
+                    {"outcome": "PATCH", "summary": "two to three", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 3", "occurrence": 1}]}]}
                 ),
             ],
             "review": [

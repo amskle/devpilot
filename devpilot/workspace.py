@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import uuid
 from datetime import datetime, timedelta
@@ -134,6 +135,22 @@ class WorkspaceManager:
                 self.clock.now() + timedelta(seconds=lease_ttl_seconds)
             ).isoformat(),
         )
+
+    def delete_task(self, task_id: str) -> None:
+        """Remove all isolated repositories and worktrees for one task."""
+
+        target = (self.root / task_id).resolve()
+        if target.parent != self.root:
+            raise PolicyDeniedError(
+                "refusing to delete a workspace outside the DevPilot workspace root"
+            )
+        if target.exists():
+
+            def remove_readonly(function, path, _error_info) -> None:
+                os.chmod(path, stat.S_IWRITE)
+                function(path)
+
+            shutil.rmtree(target, onerror=remove_readonly)
 
     def renew_lease(
         self,

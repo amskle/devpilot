@@ -264,9 +264,11 @@ class AgentRunner:
                     {
                         "role": "user",
                         "content": (
-                            "Your previous response failed validation. Return only one valid JSON "
-                            f"object for {output_model.__name__}; do not call tools or add prose. "
-                            f"Validation error: {exc}. JSON Schema: {output_schema}"
+                            "Your previous response failed validation. Keep the same conclusion, "
+                            "decision, and evidence as your previous response and fix only the format: "
+                            "return exactly one raw JSON object at the top level for "
+                            f"{output_model.__name__}, without markdown code fences, prose, or tool "
+                            f"calls. Validation error: {exc}. JSON Schema: {output_schema}"
                         ),
                     }
                 )

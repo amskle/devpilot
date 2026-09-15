@@ -66,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--revision", default="HEAD")
 
     commands.add_parser("list")
+    delete = commands.add_parser("delete")
+    delete.add_argument(
+        "--task-id",
+        required=True,
+        action="append",
+        help="task to delete; repeat this option to delete multiple tasks",
+    )
+    delete.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm permanent deletion of the selected terminal task(s)",
+    )
     status = commands.add_parser("status")
     status.add_argument("--task-id", required=True)
     plan = commands.add_parser("plan")
@@ -270,6 +282,12 @@ def main(argv: list[str] | None = None) -> None:
             state = service.create_task(Path(args.repo), args.request, revision=args.revision)
         elif args.command == "list":
             print(json.dumps(service.control.list_tasks(), ensure_ascii=False, indent=2))
+            return
+        elif args.command == "delete":
+            if not args.yes:
+                raise ValueError("task delete requires --yes because deletion is permanent")
+            deleted = service.delete_tasks(args.task_id)
+            print(json.dumps({"deleted_task_ids": deleted}))
             return
         elif args.command == "status":
             state = service.get_state(args.task_id)

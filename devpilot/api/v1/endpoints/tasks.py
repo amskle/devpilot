@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 
 from devpilot.api.core.dependencies import AuthenticatedPrincipal, ControlPlaneDependency
-from devpilot.api.schemas import CreateTaskRequest, ERROR_RESPONSES, TaskListResponse, TaskStateResponse
+from devpilot.api.schemas import (
+    CreateTaskRequest,
+    DeleteTasksRequest,
+    DeleteTasksResponse,
+    ERROR_RESPONSES,
+    TaskListResponse,
+    TaskStateResponse,
+)
 from devpilot.domain.models import TaskStatus
 
 
@@ -54,6 +61,26 @@ async def list_tasks(
     )
 
 
+@router.delete(
+    "",
+    response_model=DeleteTasksResponse,
+    summary="Delete multiple terminal task histories",
+    description=(
+        "Validates visibility and terminal status for every requested task before "
+        "permanently removing their durable and live data."
+    ),
+    responses=ERROR_RESPONSES,
+    operation_id="deleteTasks",
+)
+async def delete_tasks(
+    body: DeleteTasksRequest,
+    principal: AuthenticatedPrincipal,
+    control: ControlPlaneDependency,
+) -> dict[str, list[str]]:
+    deleted = await control.delete_tasks(body.task_ids, principal)
+    return {"deleted_task_ids": deleted}
+
+
 @router.get(
     "/{task_id}",
     response_model=TaskStateResponse,
@@ -68,3 +95,23 @@ async def get_task(
     control: ControlPlaneDependency,
 ) -> dict[str, Any]:
     return await control.task_view(task_id, principal)
+
+
+@router.delete(
+    "/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete terminal task history",
+    description=(
+        "Permanently removes a terminal task, including events, plans, checkpoints, "
+        "artifacts, and its isolated workspace. Active tasks must be cancelled first."
+    ),
+    responses=ERROR_RESPONSES,
+    operation_id="deleteTask",
+)
+async def delete_task(
+    task_id: str,
+    principal: AuthenticatedPrincipal,
+    control: ControlPlaneDependency,
+) -> Response:
+    await control.delete_task(task_id, principal)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

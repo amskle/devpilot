@@ -143,7 +143,11 @@ DevPilot 会同步推进任务，直到完成、失败或需要人工介入。�
 .\.venv\Scripts\python -m devpilot task list
 .\.venv\Scripts\python -m devpilot task status --task-id TASK_ID
 .\.venv\Scripts\python -m devpilot task plan --task-id TASK_ID
+.\.venv\Scripts\python -m devpilot task delete --task-id TASK_ID --yes
+.\.venv\Scripts\python -m devpilot task delete --task-id TASK_ID_1 --task-id TASK_ID_2 --yes
 ```
+
+`task delete` 会永久清理任务的事件、计划、检查点、产物和隔离工作区。重复传入 `--task-id` 可批量删除；为避免破坏正在执行的数据，整批任务都必须处于已完成、失败、取消或被策略拒绝状态，并且必须显式传入 `--yes`。
 
 至此已经完成一次最小体验。DevPilot 的所有运行数据默认存放在 `~/.devpilot`，目标源仓库保持不变，实际修改位于任务的隔离工作区中。
 
@@ -381,7 +385,7 @@ diagnosis: Diagnose only from deterministic repository evidence.
 
 ```text
 devpilot api
-devpilot task create|list|status|plan|approve|reject|cancel|rollback|restore|resume|replan
+devpilot task create|list|status|plan|approve|reject|cancel|delete|rollback|restore|resume|replan
 devpilot admin reconcile
 devpilot replay events|state|history|fork
 devpilot eval run|show|list|compare

@@ -295,6 +295,10 @@ class _FakeRedis:
         selected = selected[: options.get("count", len(selected))]
         return [(stream.encode(), selected)] if selected else []
 
+    def delete(self, *names):
+        for name in names:
+            self.streams.pop(name, None)
+
 
 def test_redis_stream_transport_consumer_and_websocket_bridge(tmp_path):
     store = _store(tmp_path)
@@ -323,6 +327,8 @@ def test_redis_stream_transport_consumer_and_websocket_bridge(tmp_path):
         assert next_cursor == "2-0"
         assert count == 1
         assert forwarded.event_id == event.event_id
+        consumer.delete_streams("task", ["run"])
+        assert redis.streams == {}
     finally:
         store.close()
 

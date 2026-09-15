@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from devpilot.agents.model_gateway import ModelResponse, ScriptedFakeModelGateway
 from devpilot.agents.runner import AgentRunner
@@ -61,6 +61,8 @@ def test_scripted_fake_repairs_invalid_schema_once(tmp_path):
     assert '"acceptance_criteria"' in system_prompt
     assert "Validation error:" in repair_prompt
     assert '"required"' in repair_prompt
+    assert "same conclusion" in repair_prompt
+    assert "markdown code fences" in repair_prompt
     gateway.assert_consumed()
 
 
@@ -247,7 +249,36 @@ def test_non_transient_tool_error_keeps_original_code(tmp_path):
 )
 def test_patch_draft_rejects_non_applicable_operations(operations):
     with pytest.raises(ValueError):
-        PatchDraft(summary="invalid patch", operations=operations)
+        PatchDraft(outcome="PATCH", summary="invalid patch", operations=operations)
+
+
+def test_patch_draft_accepts_declared_no_change_required():
+    draft = PatchDraft(
+        outcome="NO_CHANGE_REQUIRED",
+        summary="install vitest before rerunning the suite",
+        operations=[],
+    )
+    assert draft.outcome == "NO_CHANGE_REQUIRED"
+    assert draft.operations == []
+
+
+def test_patch_draft_rejects_operations_when_outcome_declares_no_change():
+    with pytest.raises(ValueError, match="must not contain operations"):
+        PatchDraft(
+            outcome="NO_CHANGE_REQUIRED",
+            summary="contradiction",
+            operations=[
+                {
+                    "target_file": "app.py",
+                    "replacements": [{"old": "value = 1", "new": "value = 2"}],
+                }
+            ],
+        )
+
+
+def test_patch_draft_requires_explicit_outcome():
+    with pytest.raises(ValidationError, match="outcome"):
+        PatchDraft.model_validate({"summary": "legacy payload", "operations": []})
 
 
 @pytest.mark.parametrize(

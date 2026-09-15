@@ -679,6 +679,42 @@ select[aria-invalid="true"] {
   transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out);
 }
 
+.history-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.history-batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-block-end: var(--space-sm);
+}
+
+.history-batch-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+}
+
+.history-select-placeholder {
+  width: 0.8125rem;
+}
+
+.history-row .history-item {
+  width: 100%;
+}
+
+.history-delete {
+  color: var(--color-danger);
+}
+
 .history-item.active {
   border-color: var(--color-rule);
   background-color: var(--color-surface-active);

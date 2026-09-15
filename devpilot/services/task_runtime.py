@@ -303,6 +303,9 @@ class TaskRuntimeCore:
             elif isinstance(exc, BudgetExceededError):
                 status = TaskStatus.WAITING_HUMAN_INTERVENTION.value
                 category = "BUDGET"
+            elif getattr(exc, "code", None) == "MODEL_OUTPUT_INVALID":
+                status = TaskStatus.WAITING_HUMAN_INTERVENTION.value
+                category = "AGENT"
             else:
                 status = TaskStatus.FAILED.value
                 category = "NODE"

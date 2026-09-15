@@ -27,6 +27,7 @@ def approval_scenario() -> ScriptedFakeModelGateway:
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "change password helper",
                         "operations": [
                             {
@@ -101,6 +102,7 @@ def test_patch_generation_retries_once_with_exact_authorized_source(tmp_path):
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "first attempt",
                         "operations": [
                             {
@@ -115,6 +117,7 @@ def test_patch_generation_retries_once_with_exact_authorized_source(tmp_path):
                 ),
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "corrected attempt",
                         "operations": [
                             {
@@ -449,6 +452,7 @@ def test_first_verification_failure_retries_and_success_clears_latest_failure(tm
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "wrong attempt",
                         "operations": [
                             {
@@ -461,6 +465,7 @@ def test_first_verification_failure_retries_and_success_clears_latest_failure(tm
                 ),
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "correct attempt",
                         "operations": [
                             {
@@ -546,6 +551,7 @@ def test_java_baseline_failure_guides_exact_assertion_fix(tmp_path):
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "correct expected quotient",
                         "operations": [
                             {
@@ -658,6 +664,7 @@ def test_no_action_after_failed_patch_rolls_back_and_requires_human(tmp_path):
             "patch_generation": [
                 ModelResponse.final(
                     {
+                        "outcome": "PATCH",
                         "summary": "wrong attempt",
                         "operations": [
                             {
@@ -702,9 +709,9 @@ def test_restore_forks_new_run_and_restores_git_plan_and_artifacts(tmp_path):
                 ModelResponse.final({"outcome": "ISSUE_FOUND", "summary": "restored", "issues": [{"issue": "value"}]}),
             ],
             "patch_generation": [
-                ModelResponse.final({"summary": "wrong attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 1", "new": "value = 2", "occurrence": 1}]}]}),
-                ModelResponse.final({"summary": "second wrong attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 4", "occurrence": 1}]}]}),
-                ModelResponse.final({"summary": "correct attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 3", "occurrence": 1}]}]}),
+                ModelResponse.final({"outcome": "PATCH", "summary": "wrong attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 1", "new": "value = 2", "occurrence": 1}]}]}),
+                ModelResponse.final({"outcome": "PATCH", "summary": "second wrong attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 4", "occurrence": 1}]}]}),
+                ModelResponse.final({"outcome": "PATCH", "summary": "correct attempt", "operations": [{"target_file": "app.py", "issues": ["value"], "replacements": [{"old": "value = 2", "new": "value = 3", "occurrence": 1}]}]}),
             ],
             "review": [ModelResponse.final({"summary": "verified", "outcome": "COMPLETED", "lessons": []})],
         }
@@ -767,5 +774,93 @@ def test_node_exception_is_normalized_and_checkpointed(tmp_path):
         assert service.get_state(state["task_id"]) == state
         assert service.cancel(state["task_id"], state["state_revision"]) == state
         assert any(event["event_type"] == "node_failed" for event in service.control.events(state["task_id"]))
+    finally:
+        service.close()
+
+
+def test_patch_generation_no_change_required_pauses_for_human(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {"summary": "inspect", "tasks": [], "acceptance_criteria": ["tests pass"], "risks": []}
+                )
+            ],
+            "diagnosis": [
+                ModelResponse.final(
+                    {
+                        "outcome": "ISSUE_FOUND",
+                        "summary": "vitest is not installed in the environment",
+                        "issues": [{"issue": "missing-vitest"}],
+                    }
+                )
+            ],
+            "patch_generation": [
+                ModelResponse.final(
+                    {
+                        "outcome": "NO_CHANGE_REQUIRED",
+                        "summary": "install vitest and rerun the suite; no source change applies",
+                        "operations": [],
+                    }
+                )
+            ],
+        }
+    )
+    service = TaskService(data_dir=tmp_path / "data", gateway=gateway)
+    try:
+        waiting = service.create_task(repo, "fix failing tests")
+        assert waiting["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+        assert waiting["pause_reason"] == "PATCH_NO_CHANGE_REQUIRED"
+        failure = waiting["latest_failure"]
+        assert failure["error_code"] == "PATCH_NO_CHANGE_REQUIRED"
+        assert failure["category"] == "PATCH"
+        assert failure["recovery_action"] == "HUMAN"
+        assert waiting["patch_proposal"] is None
+        assert waiting["review"] is None
+    finally:
+        service.close()
+
+
+def test_model_output_invalid_pauses_for_human_instead_of_failing(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {"summary": "inspect", "tasks": [], "acceptance_criteria": ["tests pass"], "risks": []}
+                )
+            ],
+            "diagnosis": [
+                ModelResponse.final(
+                    {"outcome": "ISSUE_FOUND", "summary": "value is stale", "issues": [{"issue": "value"}]}
+                )
+            ],
+            "patch_generation": [
+                ModelResponse.final(
+                    '```json\n{"outcome": "PATCH", "summary": "wrapped", "operations": []}\n```'
+                ),
+                ModelResponse.final(
+                    {"outcome": "PATCH", "summary": "still invalid", "operations": []}
+                ),
+            ],
+        },
+        strict=False,
+    )
+    service = TaskService(data_dir=tmp_path / "data", gateway=gateway)
+    try:
+        waiting = service.create_task(repo, "set target value")
+        assert waiting["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+        assert waiting["pause_reason"] == "MODEL_OUTPUT_INVALID"
+        failure = waiting["latest_failure"]
+        assert failure["error_code"] == "MODEL_OUTPUT_INVALID"
+        assert failure["category"] == "AGENT"
+        assert failure["recovery_action"] == "HUMAN"
+        assert gateway.call_count("patch_generation") == 2
+        assert any(
+            event["event_type"] == "node_failed"
+            and event["payload"]["error_code"] == "MODEL_OUTPUT_INVALID"
+            for event in service.control.events(waiting["task_id"])
+        )
     finally:
         service.close()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -70,3 +71,13 @@ class ArtifactStore:
 
     def read_text(self, task_id: str, run_id: str, ref: dict[str, Any]) -> str:
         return self.read_bytes(task_id, run_id, ref).decode("utf-8")
+
+    def delete_task(self, task_id: str) -> None:
+        """Remove every immutable artifact belonging to one task."""
+
+        tasks_root = (self.root / "tasks").resolve()
+        target = (tasks_root / task_id).resolve()
+        if target.parent != tasks_root:
+            raise ValueError("task artifact path escaped store root")
+        if target.exists():
+            shutil.rmtree(target)
