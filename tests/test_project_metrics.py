@@ -21,7 +21,7 @@ def test_static_metrics_match_version_controlled_contracts():
 
     assert metrics["workflow_nodes"]["count"] == 15
     assert metrics["agents"]["count"] == 4
-    assert metrics["skills"]["count"] == 8
+    assert metrics["skills"]["count"] == 9
     assert metrics["task_statuses"]["count"] == 10
     assert metrics["execution_budget_limits"]["count"] == 9
     assert metrics["api_routes"] == {"http": 22, "websocket": 1, "total": 23}

@@ -143,9 +143,12 @@ DevPilot 会同步推进任务，直到完成、失败或需要人工介入。�
 .\.venv\Scripts\python -m devpilot task list
 .\.venv\Scripts\python -m devpilot task status --task-id TASK_ID
 .\.venv\Scripts\python -m devpilot task plan --task-id TASK_ID
+.\.venv\Scripts\python -m devpilot alerts list --task-id TASK_ID
 .\.venv\Scripts\python -m devpilot task delete --task-id TASK_ID --yes
 .\.venv\Scripts\python -m devpilot task delete --task-id TASK_ID_1 --task-id TASK_ID_2 --yes
 ```
+
+`alerts list` 返回从任务状态确定性派生并去重的告警（预算耗尽、任务失败、审批挂起、人工介入），省略 `--task-id` 可查看全部任务。
 
 `task delete` 会永久清理任务的事件、计划、检查点、产物和隔离工作区。重复传入 `--task-id` 可批量删除；为避免破坏正在执行的数据，整批任务都必须处于已完成、失败、取消或被策略拒绝状态，并且必须显式传入 `--yes`。
 
@@ -386,6 +389,7 @@ diagnosis: Diagnose only from deterministic repository evidence.
 ```text
 devpilot api
 devpilot task create|list|status|plan|approve|reject|cancel|delete|rollback|restore|resume|replan
+devpilot alerts list
 devpilot admin reconcile
 devpilot replay events|state|history|fork
 devpilot eval run|show|list|compare
@@ -481,7 +485,7 @@ npm test
 npm run build
 ```
 
-CI 在 Python 3.10、Python 3.13 和 Node.js 22 上执行。测试覆盖 8 个 Skill、GraphState/Pydantic 边界、模型 Fake Gateway、工具权限与重试、预算、SQLite 对账、工作区隔离、审批、恢复、版本化 Plan、可靠事件、FastAPI 安全契约、Redis 多 Worker、Vue 控制绑定以及 Phase 7 Replay/Evaluation。详细范围见 [测试手册](docs/testing.md)。
+CI 在 Python 3.10、Python 3.13 和 Node.js 22 上执行。测试覆盖 9 个 Skill、GraphState/Pydantic 边界、模型 Fake Gateway、工具权限与重试、预算、SQLite 对账、工作区隔离、审批、恢复、版本化 Plan、可靠事件、FastAPI 安全契约、Redis 多 Worker、Vue 控制绑定以及 Phase 7 Replay/Evaluation。详细范围见 [测试手册](docs/testing.md)。
 
 ## 文档导航
 
@@ -500,7 +504,7 @@ CI 在 Python 3.10、Python 3.13 和 Node.js 22 上执行。测试覆盖 8 个 S
 | [部署指南](docs/deployment.md) | 本地、API、分布式与 Legacy 部署方式 |
 | [安全边界](docs/security.md) | 审批、隔离、凭据、回滚、Replay 与评测安全 |
 | [合规披露](docs/compliance.md) | 第三方依赖、模型、数据和授权边界 |
-| [Skill 清单](docs/skill-list.md) | 8 个 Skill 的输入、输出和适用范围 |
+| [Skill 清单](docs/skill-list.md) | 9 个 Skill 的输入、输出和适用范围 |
 
 ## 常见问题
 
@@ -522,7 +526,7 @@ CLI 帮助、已有任务查询、只读 Event/State Replay 和静态文档不�
 
 ### 支持哪些项目？
 
-当前基线测试与验证链路覆盖 Python、Maven 和 npm 项目；8 个 Skill 中部分能力是语言无关的。无法可靠识别测试命令时，任务会保留证据并进入受控失败或人工介入路径，而不是猜测执行。
+当前基线测试与验证链路覆盖 Python、Maven 和 npm 项目；9 个 Skill 中部分能力是语言无关的。无法可靠识别测试命令时，任务会保留证据并进入受控失败或人工介入路径，而不是猜测执行。
 
 ### 数据保存在哪里？
 

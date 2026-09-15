@@ -180,6 +180,13 @@ class TaskQueries:
     def change_request_history(self, task_id: str) -> list[dict[str, Any]]:
         return self.control.change_requests(task_id)
 
+    def alert_history(
+        self, task_id: str | None = None, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        if task_id is not None and self.control.get_task(task_id) is None:
+            raise KeyError(task_id)
+        return self.control.list_alerts(task_id, limit=limit)
+
     def event_history(
         self,
         task_id: str,

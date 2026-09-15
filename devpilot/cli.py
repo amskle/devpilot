@@ -154,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_compare = evaluation_commands.add_parser("compare")
     evaluation_compare.add_argument("--baseline", required=True)
     evaluation_compare.add_argument("--candidate", required=True)
+
+    alerts = groups.add_parser("alerts", help="inspect derived task alerts")
+    alerts_commands = alerts.add_subparsers(dest="command", required=True)
+    alerts_list = alerts_commands.add_parser("list")
+    alerts_list.add_argument("--task-id", default=None)
+    alerts_list.add_argument("--limit", type=int, default=None)
     return parser
 
 
@@ -219,6 +225,15 @@ def main(argv: list[str] | None = None) -> None:
         return
     service = _service(args)
     try:
+        if args.group == "alerts":
+            print(
+                json.dumps(
+                    service.alert_history(args.task_id, limit=args.limit),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
         if args.group == "admin":
             print(json.dumps({"reconciled": service.reconcile(args.task_id)}))
             return

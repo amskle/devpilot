@@ -12,3 +12,4 @@
 | risk-assessment | 风险分级评估 | diff | level/score/reasons | 修改前 | 无 | 空 diff 返回 Low | 只读 | 审批流程复用 | Modification/Manager |
 | test-execution | 构建与测试执行 | command/cwd/timeout | passed/exit_code/output | 验证阶段 | Docker 沙箱 | 超时判失败 | 沙箱隔离 | 多项目复用 | Verification |
 | knowledge-extract | 经验提取与规则生成 | notes | patterns/rule/confidence | 复盘阶段 | Engineering Memory | 返回空规则 | 人工审核后写入 | 跨任务复用 | Review |
+| repo-retrieval | 确定性片段检索与引用溯源（Chunk + TF-IDF + citation） | repo_path/query/max_chunks | scanned_files/total_chunks/matches | 规划与诊断阶段 | 文件系统 | 返回 error / 空 matches | 只读 | 多 Agent 复用 | Planning/Diagnosis |

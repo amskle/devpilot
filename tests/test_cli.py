@@ -170,3 +170,38 @@ def test_phase7_evaluation_commands_parse_comparison():
         "prompts.yaml",
     )
     assert (compare.baseline, compare.candidate) == ("eval-a", "eval-b")
+
+
+def test_alerts_list_command_parses_scope():
+    unscoped = build_parser().parse_args(["alerts", "list"])
+    scoped = build_parser().parse_args(
+        ["alerts", "list", "--task-id", "task", "--limit", "10"]
+    )
+
+    assert (unscoped.group, unscoped.command) == ("alerts", "list")
+    assert (unscoped.task_id, unscoped.limit) == (None, None)
+    assert (scoped.task_id, scoped.limit) == ("task", 10)
+
+
+def test_alerts_main_prints_history(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def alert_history(self, task_id, *, limit=None):
+            captured["scope"] = (task_id, limit)
+            return [{"alert_id": "alert_x", "rule": "APPROVAL_PENDING"}]
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("devpilot.cli.TaskService", FakeService)
+
+    main(["alerts", "list", "--task-id", "task"])
+
+    assert captured["scope"] == ("task", None)
+    assert captured["closed"] is True
+    assert "APPROVAL_PENDING" in capsys.readouterr().out

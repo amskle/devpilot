@@ -16,5 +16,6 @@
 | [ADR-0010](0010-transactional-outbox-delivery.md) | Accepted | Event Store 与 Outbox 原子写入，Redis Streams 采用至少一次投递 |
 | [ADR-0011](0011-redis-distributed-api-state.md) | Accepted | Redis 承载多 worker 的票据、限流和实时事件状态 |
 | [ADR-0012](0012-replay-evaluation-truth-sources.md) | Accepted | Event/Checkpoint Replay 分离，并约束评测可比性 |
+| [ADR-0013](0013-alert-rule-engine.md) | Accepted | 告警从已结算状态确定性派生，按 fingerprint 降噪去重 |
 
 每份 ADR 至少包含背景、决策、后果和验收条件。

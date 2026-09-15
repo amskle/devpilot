@@ -53,6 +53,11 @@ class KnowledgeExtractInput(ToolInput):
     tags: list[str] = Field(default_factory=list)
 
 
+class RepoRetrievalInput(ToolInput):
+    query: str = Field(min_length=1, max_length=2000)
+    max_chunks: int = Field(default=8, ge=1, le=50)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -383,6 +388,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(ToolSpec("risk-assessment", RiskAssessmentInput, _risk_handler))
     registry.register(ToolSpec("test-execution", TestExecutionInput, _test_handler, retry_policy="BACKOFF", max_retries=1))
     registry.register(ToolSpec("knowledge-extract", KnowledgeExtractInput, _knowledge_handler, allowed_agents=("review",)))
+    registry.register(ToolSpec("repo-retrieval", RepoRetrievalInput, _legacy_repo_handler("repo-retrieval"), allowed_agents=("planning", "diagnosis")))
     return registry
 
 

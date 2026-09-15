@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from devpilot.clock import Clock, SystemClock
+from devpilot.domain.alerts import AlertRecord
 from devpilot.domain.models import TERMINAL_STATUSES
 from devpilot.domain.state import GraphState, validate_state
 from devpilot.errors import StateConflictError
@@ -211,6 +212,20 @@ class SQLiteControlStore(
             );
             CREATE INDEX IF NOT EXISTS evaluation_runs_dataset
               ON evaluation_runs(dataset_digest, created_at);
+            CREATE TABLE IF NOT EXISTS alerts (
+              alert_id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              rule TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              evidence_json TEXT NOT NULL,
+              fingerprint TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE(task_id, fingerprint)
+            );
+            CREATE INDEX IF NOT EXISTS alerts_task
+              ON alerts(task_id, created_at);
             """
         )
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(task_projection)").fetchall()}
@@ -362,6 +377,54 @@ class SQLiteControlStore(
             ).fetchall()
         return sorted({str(task["run_id"]), *(str(row["run_id"]) for row in rows)})
 
+    def save_alert(self, record: dict[str, Any]) -> bool:
+        """Persist one validated alert; duplicates keep the first occurrence."""
+
+        alert = AlertRecord.from_state_dict(record)
+        with self._immediate_transaction():
+            cursor = self._conn.execute(
+                """INSERT OR IGNORE INTO alerts
+                   (alert_id, task_id, run_id, rule, severity, summary,
+                    evidence_json, fingerprint, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    alert.alert_id,
+                    alert.task_id,
+                    alert.run_id,
+                    alert.rule,
+                    alert.severity,
+                    alert.summary,
+                    json.dumps(self._sanitize(alert.evidence), ensure_ascii=False),
+                    alert.fingerprint,
+                    alert.created_at,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def list_alerts(
+        self, task_id: str | None = None, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        sql = "SELECT * FROM alerts"
+        parameters: list[Any] = []
+        if task_id is not None:
+            sql += " WHERE task_id=?"
+            parameters.append(task_id)
+        sql += " ORDER BY created_at DESC, alert_id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, parameters).fetchall()
+        return [self._alert_from_row(row) for row in rows]
+
+    @staticmethod
+    def _alert_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["evidence"] = json.loads(item.pop("evidence_json"))
+        return item
+
     def delete_task(self, task_id: str) -> None:
         """Delete all control-plane records for a terminal task atomically."""
 
@@ -374,6 +437,7 @@ class SQLiteControlStore(
             if str(row["status"]) not in TERMINAL_STATUSES:
                 raise StateConflictError("only terminal tasks can be deleted")
             for table in (
+                "alerts",
                 "event_outbox",
                 "idempotency_keys",
                 "idempotency_inputs",

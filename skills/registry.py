@@ -12,6 +12,7 @@ SKILLS = {
     "risk-assessment": ("risk_assessment", "executor"),
     "test-execution": ("test_execution", "executor"),
     "knowledge-extract": ("knowledge_extract", "executor"),
+    "repo-retrieval": ("repo_retrieval", "executor"),
 }
 
 

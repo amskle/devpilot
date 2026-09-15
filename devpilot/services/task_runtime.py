@@ -30,6 +30,7 @@ from devpilot.domain.state import GraphState, create_initial_state, validate_sta
 from devpilot.errors import BudgetExceededError, PolicyDeniedError, StateConflictError
 from devpilot.events.redaction import sanitize_event_value
 from devpilot.orchestration.graph import GraphRuntime, build_graph
+from devpilot.services.alerts import AlertService
 from devpilot.services.pricing import PricingCatalog
 from devpilot.services.storage import ArtifactStore, SQLiteControlStore, default_data_dir
 from devpilot.tools.executor import ToolExecutor, build_default_registry
@@ -58,6 +59,7 @@ class TaskRuntimeCore:
         self.control = SQLiteControlStore(self.data_dir / "control.sqlite", self.clock)
         self.workspace_manager = WorkspaceManager(self.data_dir / "workspaces", self.clock)
         self.tools = ToolExecutor(build_default_registry())
+        self.alert_service = AlertService(self.control, self.clock)
         self.model_name = model or "gpt-5-mini"
         if gateway is not None and gateway_factory is not None:
             raise ValueError("gateway and gateway_factory are mutually exclusive")
@@ -195,10 +197,10 @@ class TaskRuntimeCore:
     ) -> GraphState:
         config = self._config(run_id)
         if not telemetry.telemetry_enabled():
-            return self._invoke_graph(graph, config, run_id, value)
+            return self._record_alerts(self._invoke_graph(graph, config, run_id, value))
         identity = self._trace_identity(graph, config, value)
         if identity is None:
-            return self._invoke_graph(graph, config, run_id, value)
+            return self._record_alerts(self._invoke_graph(graph, config, run_id, value))
         task_id, request, parent_run_id, resumed, revision, model = identity
         with telemetry.task_run_observation(
             task_id=task_id,
@@ -209,13 +211,19 @@ class TaskRuntimeCore:
             parent_run_id=parent_run_id,
             resumed=resumed,
         ) as observation:
-            state = self._invoke_graph(graph, config, run_id, value)
+            state = self._record_alerts(self._invoke_graph(graph, config, run_id, value))
             observation.update(
                 output=self._trace_output(state),
                 metadata={"baseline_revision": (state["workspace_ref"] or {}).get("baseline_revision", revision)},
                 level="ERROR" if state["status"] == "FAILED" else "DEFAULT",
             )
             return state
+
+    def _record_alerts(self, state: GraphState) -> GraphState:
+        """Derive alerts from a settled state without mutating it or its events."""
+
+        self.alert_service.evaluate_and_store(state)
+        return state
 
     def _trace_identity(
         self, graph: Any, config: dict[str, Any], value: GraphState | Command
