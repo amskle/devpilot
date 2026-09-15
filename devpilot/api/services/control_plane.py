@@ -135,6 +135,11 @@ class ControlPlaneService:
             body.request,
             revision=body.revision,
             model=body.model,
+            budget=(
+                body.budget.to_execution_budget()
+                if body.budget is not None
+                else None
+            ),
         )
         self.tasks.control.bind_task_owner(state["task_id"], principal.subject)
         return await run_in_threadpool(self.tasks.task_view, state["task_id"])

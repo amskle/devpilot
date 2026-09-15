@@ -107,6 +107,144 @@ def test_tool_round_limit_requests_one_tool_free_final_response(tmp_path):
     assert "tool-round limit" in gateway.calls[-1]["messages"][-1]["content"]
 
 
+def test_generation_limit_forces_the_last_call_to_be_tool_free(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}]
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "bounded plan",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                    }
+                ),
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    result = runner.invoke(
+        _spec(
+            allowed_tools=("project-context",),
+            max_generations=2,
+            max_tool_rounds=4,
+        ),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    assert result.result.status == "ok"
+    assert gateway.call_count("planning") == 2
+    assert gateway.calls[-1]["tools"] == []
+    assert "final generation" in gateway.calls[-1]["messages"][-1]["content"]
+
+
+def test_node_budget_keeps_headroom_for_a_tool_free_final_generation(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                ),
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                ),
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                ),
+                ModelResponse.final(
+                    {
+                        "summary": "budget forced final",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                    },
+                    prompt_tokens=50,
+                    completion_tokens=10,
+                ),
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    result = runner.invoke(
+        _spec(
+            allowed_tools=("project-context",),
+            max_generations=6,
+            max_token_budget=500,
+        ),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget(
+            policy_version=2,
+            max_total_tokens=10_000,
+        ).to_state_dict(),
+        model_profile=ModelProfile(
+            provider="fake",
+            model="test",
+            max_prompt_tokens=100,
+            max_completion_tokens=10,
+        ),
+    )
+
+    assert result.result.status == "ok"
+    assert gateway.call_count("planning") == 4
+    assert result.execution_budget["tool_calls_used"] == 3
+    assert gateway.calls[-1]["tools"] == []
+    assert "remaining token budget" in gateway.calls[-1]["messages"][-1]["content"]
+
+
+def test_node_budget_still_settles_actual_overage_before_stopping(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {
+                        "summary": "too expensive",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                    },
+                    prompt_tokens=70,
+                    completion_tokens=40,
+                )
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    with pytest.raises(BudgetExceededError, match="planning node") as captured:
+        runner.invoke(
+            _spec(max_token_budget=100),
+            node_context={},
+            output_model=PlanDraft,
+            workspace=_workspace(tmp_path),
+            execution_budget=ExecutionBudget(
+                policy_version=2,
+                max_total_tokens=10_000,
+            ).to_state_dict(),
+            model_profile=ModelProfile(
+                provider="fake",
+                model="test",
+                max_prompt_tokens=10,
+                max_completion_tokens=10,
+            ),
+        )
+
+    assert captured.value.execution_budget["prompt_tokens_used"] == 70
+    assert captured.value.execution_budget["completion_tokens_used"] == 40
+
+
 def test_agent_repo_retrieval_returns_revision_bound_citations(tmp_path):
     content = "def process_payment():\n    return 'ok'\n"
     (tmp_path / "payment.py").write_text(content, encoding="utf-8")
@@ -169,7 +307,7 @@ def test_agent_repo_retrieval_returns_revision_bound_citations(tmp_path):
     assert len(evidence["matches"][0]["content_sha256"]) == 64
 
 
-def test_agent_repairs_citation_not_returned_by_retriever(tmp_path):
+def test_agent_repairs_single_invalid_citation_without_another_generation(tmp_path):
     content = "def process_payment():\n    return 'ok'"
     (tmp_path / "payment.py").write_text(content, encoding="utf-8")
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -202,15 +340,6 @@ def test_agent_repairs_citation_not_returned_by_retriever(tmp_path):
                         ],
                     }
                 ),
-                ModelResponse.final(
-                    {
-                        "summary": "fixed citation",
-                        "tasks": [],
-                        "acceptance_criteria": ["done"],
-                        "risks": [],
-                        "evidence": [valid_evidence],
-                    }
-                ),
             ]
         }
     )
@@ -225,8 +354,34 @@ def test_agent_repairs_citation_not_returned_by_retriever(tmp_path):
     )
 
     assert result.result.structured_output["evidence"] == [valid_evidence]
-    assert gateway.call_count("planning") == 3
-    assert "was not returned" in gateway.calls[-1]["messages"][-1]["content"]
+    assert gateway.call_count("planning") == 2
+    gateway.assert_consumed()
+
+
+def test_agent_removes_json_fence_without_another_generation(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    "```json\n"
+                    '{"summary":"ok","tasks":[],"acceptance_criteria":["done"]}'
+                    "\n```"
+                )
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    result = runner.invoke(
+        _spec(),
+        node_context={},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=ExecutionBudget().to_state_dict(),
+    )
+
+    assert result.result.status == "ok"
+    assert gateway.call_count("planning") == 1
 
 
 def test_repo_retrieval_schema_exposes_supported_chunk_controls():
@@ -234,9 +389,15 @@ def test_repo_retrieval_schema_exposes_supported_chunk_controls():
         ("repo-retrieval",), expose_runtime_fields=False
     )[0]["function"]["parameters"]
 
-    assert {"query", "chunk_lines", "overlap_lines", "max_chunks"}.issubset(
-        schema["properties"]
-    )
+    assert {
+        "query",
+        "chunk_lines",
+        "overlap_lines",
+        "max_chunks",
+        "max_chunks_per_file",
+    }.issubset(schema["properties"])
+    assert schema["properties"]["max_chunks"]["default"] == 5
+    assert schema["properties"]["max_chunks_per_file"]["default"] == 1
 
 
 def test_unauthorized_tool_is_rejected_before_handler(tmp_path):
@@ -543,6 +704,121 @@ def test_cost_reservation_and_active_time_stop_calls_before_execution(tmp_path):
 
     with pytest.raises(BudgetExceededError, match="active time"):
         BudgetService().reserve_tool(ExecutionBudget(max_active_seconds=0).to_state_dict())
+
+
+def test_dynamic_reservation_uses_request_size_instead_of_model_maximum(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.final(
+                    {
+                        "summary": "completed with remaining real budget",
+                        "tasks": [],
+                        "acceptance_criteria": ["done"],
+                        "risks": [],
+                    },
+                    prompt_tokens=1_000,
+                    completion_tokens=100,
+                )
+            ]
+        }
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+    budget = ExecutionBudget(
+        max_total_tokens=100_000,
+        prompt_tokens_used=60_000,
+        completion_tokens_used=10_000,
+    )
+
+    result = runner.invoke(
+        _spec(),
+        node_context={"request": "small follow-up"},
+        output_model=PlanDraft,
+        workspace=_workspace(tmp_path),
+        execution_budget=budget.to_state_dict(),
+        model_profile=ModelProfile(provider="fake", model="test"),
+    )
+
+    assert gateway.call_count("planning") == 1
+    assert gateway.calls[0]["max_completion_tokens"] == 4_096
+    assert result.execution_budget["prompt_tokens_used"] == 61_000
+    assert result.execution_budget["completion_tokens_used"] == 10_100
+
+
+def test_later_reservation_failure_preserves_in_flight_agent_usage(tmp_path):
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=30,
+                    completion_tokens=10,
+                ),
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=30,
+                    completion_tokens=10,
+                ),
+            ]
+        },
+        strict=False,
+    )
+    runner = AgentRunner(gateway, ToolExecutor(build_default_registry()))
+
+    with pytest.raises(BudgetExceededError, match="token budget") as captured:
+        runner.invoke(
+            _spec(allowed_tools=("project-context",)),
+            node_context={},
+            output_model=PlanDraft,
+            workspace=_workspace(tmp_path),
+            execution_budget=ExecutionBudget(
+                max_total_tokens=150
+            ).to_state_dict(),
+            model_profile=ModelProfile(
+                provider="fake",
+                model="test",
+                max_prompt_tokens=100,
+                max_completion_tokens=10,
+            ),
+        )
+
+    failed_budget = captured.value.execution_budget
+    assert gateway.call_count("planning") == 2
+    assert failed_budget["llm_calls_used"] == 2
+    assert failed_budget["tool_calls_used"] == 2
+    assert failed_budget["prompt_tokens_used"] == 60
+    assert failed_budget["completion_tokens_used"] == 20
+
+
+def test_all_reservation_failures_carry_the_current_budget():
+    service = BudgetService()
+    budget = ExecutionBudget(
+        max_llm_calls=1,
+        llm_calls_used=1,
+        prompt_tokens_used=12,
+        completion_tokens_used=3,
+    ).to_state_dict()
+
+    with pytest.raises(BudgetExceededError) as captured:
+        service.reserve_llm(budget, estimated_tokens=1)
+
+    assert captured.value.execution_budget == budget
+
+
+def test_actual_usage_still_enforces_the_hard_token_limit():
+    budget = ExecutionBudget(
+        max_total_tokens=100,
+        prompt_tokens_used=80,
+    ).to_state_dict()
+
+    with pytest.raises(BudgetExceededError, match="actual token") as captured:
+        BudgetService().settle_llm(
+            budget,
+            prompt_tokens=25,
+            completion_tokens=0,
+        )
+
+    assert captured.value.execution_budget["prompt_tokens_used"] == 105
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-1"])

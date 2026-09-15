@@ -23,6 +23,7 @@ class ModelToolCall:
 class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reported_total_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class ModelGateway(Protocol):
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        max_completion_tokens: int | None = None,
         node: str | None = None,
         turn: int | None = None,
     ) -> ModelResponse: ...
@@ -81,6 +83,7 @@ class ScriptedFakeModelGateway:
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        max_completion_tokens: int | None = None,
         node: str | None = None,
         turn: int | None = None,
     ) -> ModelResponse:
@@ -91,6 +94,7 @@ class ScriptedFakeModelGateway:
                 "messages": copy.deepcopy(messages),
                 "tools": [item["function"]["name"] for item in tools],
                 "output_model": output_model.__name__,
+                "max_completion_tokens": max_completion_tokens,
                 "node": node,
                 "turn": turn,
             }
@@ -145,9 +149,25 @@ class OpenAICompatibleGateway:
     @staticmethod
     def _convert(response: Any) -> ModelResponse:
         message = response.choices[0].message
+        prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(
+            getattr(response.usage, "completion_tokens", 0) or 0
+        )
+        reported_total = int(
+            getattr(response.usage, "total_tokens", 0)
+            or prompt_tokens + completion_tokens
+        )
+        # OpenAI includes cached input in prompt_tokens and reasoning in
+        # completion_tokens. Some compatible gateways report those only in
+        # total_tokens, so charge any otherwise-unclassified remainder too.
+        completion_tokens += max(
+            0,
+            reported_total - prompt_tokens - completion_tokens,
+        )
         usage = ModelUsage(
-            int(getattr(response.usage, "prompt_tokens", 0) or 0),
-            int(getattr(response.usage, "completion_tokens", 0) or 0),
+            prompt_tokens,
+            completion_tokens,
+            reported_total,
         )
         calls = []
         for call in message.tool_calls or []:
@@ -165,11 +185,14 @@ class OpenAICompatibleGateway:
         tools: list[dict[str, Any]],
         output_model: type[BaseModel],
         timeout_seconds: int,
+        max_completion_tokens: int | None = None,
         node: str | None = None,
         turn: int | None = None,
     ) -> ModelResponse:
         schema = output_model.model_json_schema()
         common = {"model": self.model, "messages": messages, "timeout": timeout_seconds}
+        if max_completion_tokens is not None:
+            common["max_completion_tokens"] = max_completion_tokens
         if tools:
             common["tools"] = tools
         trace_attributes = {

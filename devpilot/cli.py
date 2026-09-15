@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from devpilot.domain.models import ExecutionBudget
 from devpilot.domain.replay import EvaluationCaseResult, EvaluationDataset
 from devpilot.env import load_devpilot_env
 from devpilot.service import TaskService
@@ -17,6 +18,26 @@ from devpilot.service import TaskService
 
 def _print_state(state: dict[str, Any]) -> None:
     print(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _execution_budget_from_args(args: argparse.Namespace) -> ExecutionBudget | None:
+    fields = (
+        "max_iterations",
+        "max_plan_revisions",
+        "max_rollbacks",
+        "max_llm_calls",
+        "max_tool_calls",
+        "max_tool_retries",
+        "max_total_tokens",
+        "max_cost",
+        "max_active_seconds",
+    )
+    overrides = {
+        field: getattr(args, field)
+        for field in fields
+        if getattr(args, field, None) is not None
+    }
+    return ExecutionBudget(**overrides) if overrides else None
 
 
 def _print_evaluation_progress(
@@ -64,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--repo", required=True)
     create.add_argument("--request", required=True)
     create.add_argument("--revision", default="HEAD")
+    create.add_argument("--max-iterations", type=int)
+    create.add_argument("--max-plan-revisions", type=int)
+    create.add_argument("--max-rollbacks", type=int)
+    create.add_argument("--max-llm-calls", type=int)
+    create.add_argument("--max-tool-calls", type=int)
+    create.add_argument("--max-tool-retries", type=int)
+    create.add_argument("--max-total-tokens", type=int)
+    create.add_argument("--max-cost")
+    create.add_argument("--max-active-seconds", type=int)
 
     commands.add_parser("list")
     delete = commands.add_parser("delete")
@@ -294,7 +324,12 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps(value, ensure_ascii=False, indent=2))
             return
         if args.command == "create":
-            state = service.create_task(Path(args.repo), args.request, revision=args.revision)
+            state = service.create_task(
+                Path(args.repo),
+                args.request,
+                revision=args.revision,
+                budget=_execution_budget_from_args(args),
+            )
         elif args.command == "list":
             print(json.dumps(service.control.list_tasks(), ensure_ascii=False, indent=2))
             return

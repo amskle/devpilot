@@ -124,6 +124,31 @@ def test_max_chunks_limits_and_scores_ties_break_deterministically():
         assert limited == repeated
 
 
+def test_default_selection_returns_at_most_one_chunk_per_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        repeated = "\n".join(
+            f"needle value_{index}" for index in range(120)
+        )
+        _write(repo, "large.txt", repeated)
+        _write(repo, "other.txt", "needle from another file\n")
+
+        result = run(
+            {
+                "repo_path": tmp,
+                "query": "needle",
+                "chunk_lines": 20,
+                "overlap_lines": 0,
+            }
+        )
+
+        paths = [match["path"] for match in result["data"]["matches"]]
+        assert paths.count("large.txt") == 1
+        assert paths.count("other.txt") == 1
+        assert result["data"]["max_chunks_per_file"] == 1
+        assert result["data"]["result_truncated"] is True
+
+
 def test_invalid_parameters_and_inputs_return_errors():
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
@@ -138,6 +163,16 @@ def test_invalid_parameters_and_inputs_return_errors():
         )
         assert (
             run({"repo_path": tmp, "query": "value", "max_chunks": 0})["status"]
+            == "error"
+        )
+        assert (
+            run(
+                {
+                    "repo_path": tmp,
+                    "query": "value",
+                    "max_chunks_per_file": 0,
+                }
+            )["status"]
             == "error"
         )
 

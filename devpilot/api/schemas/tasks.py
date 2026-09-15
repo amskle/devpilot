@@ -2,10 +2,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from devpilot.api.schemas.common import ApiModel
 from devpilot.domain.models import ExecutionBudget, TaskStatus
+
+
+class TaskBudgetRequest(ApiModel):
+    """Caller-selectable limits; usage counters remain runtime-owned."""
+
+    max_iterations: int = Field(default=3, ge=0, le=100)
+    max_plan_revisions: int = Field(default=2, ge=0, le=50)
+    max_rollbacks: int = Field(default=2, ge=0, le=50)
+    max_llm_calls: int = Field(default=20, ge=0, le=200)
+    max_tool_calls: int = Field(default=40, ge=0, le=1_000)
+    max_tool_retries: int = Field(default=8, ge=0, le=200)
+    max_total_tokens: int = Field(default=200_000, ge=0, le=10_000_000)
+    max_cost: str | None = Field(default=None, max_length=64)
+    max_active_seconds: int = Field(default=1_800, ge=0, le=86_400)
+
+    @model_validator(mode="after")
+    def validate_domain_budget(self):
+        self.to_execution_budget()
+        return self
+
+    def to_execution_budget(self) -> ExecutionBudget:
+        return ExecutionBudget.model_validate(self.model_dump())
 
 
 class CreateTaskRequest(ApiModel):
@@ -34,6 +56,12 @@ class CreateTaskRequest(ApiModel):
         max_length=255,
         description="Optional per-task model; the selected value is frozen in the pricing snapshot",
         examples=["gpt-5-mini"],
+    )
+    budget: TaskBudgetRequest | None = Field(
+        default=None,
+        description=(
+            "Optional task limits. Usage counters and pricing references are runtime-owned."
+        ),
     )
 
 

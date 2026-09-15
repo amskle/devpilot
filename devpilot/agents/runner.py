@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -9,11 +10,17 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from devpilot.agents.model_gateway import ModelGateway
-from devpilot.domain.models import AgentResult, AgentSpec, ModelProfile, WorkspaceRef
+from devpilot import telemetry
+from devpilot.domain.models import (
+    AgentResult,
+    AgentSpec,
+    ExecutionBudget,
+    ModelProfile,
+    WorkspaceRef,
+)
 from devpilot.errors import ModelGatewayError
 from devpilot.services.budget import BudgetService
 from devpilot.services.pricing import PricingCatalog
-from devpilot import telemetry
 from devpilot.tools.executor import ToolExecutor
 
 
@@ -28,6 +35,86 @@ class AgentRunner:
         self.gateway = gateway
         self.tools = tools
         self.budget_service = budget_service or BudgetService()
+
+    @staticmethod
+    def _estimate_prompt_tokens(
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        output_schema: str,
+    ) -> int:
+        """Estimate this request payload instead of reserving the model maximum.
+
+        ASCII-heavy source and JSON are conservatively estimated at three
+        characters per token; non-ASCII text is counted one-for-one to stay
+        conservative for CJK. The actual provider usage remains authoritative
+        during settlement.
+        """
+
+        payload = json.dumps(
+            {"messages": messages, "tools": tools, "output_schema": output_schema},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        ascii_characters = sum(ord(character) < 128 for character in payload)
+        non_ascii_characters = len(payload) - ascii_characters
+        framing_tokens = 8 * (len(messages) + len(tools) + 1)
+        return max(
+            1,
+            math.ceil(ascii_characters / 3)
+            + non_ascii_characters
+            + framing_tokens,
+        )
+
+    @staticmethod
+    def _final_only_instruction(reason: str, output_schema: str) -> str:
+        return (
+            f"{reason} Do not call tools again. Using only evidence already "
+            "returned, provide exactly one raw JSON object matching this schema, "
+            f"without markdown fences or prose: {output_schema}"
+        )
+
+    @staticmethod
+    def _parse_json(content: str) -> Any:
+        """Remove one complete Markdown fence before strict JSON parsing."""
+
+        stripped = content.strip()
+        lines = stripped.splitlines()
+        if (
+            len(lines) >= 3
+            and lines[0].strip().lower() in {"```", "```json"}
+            and lines[-1].strip() == "```"
+        ):
+            stripped = "\n".join(lines[1:-1]).strip()
+        return json.loads(stripped)
+
+    @staticmethod
+    def _repair_retrieval_evidence(
+        raw: Any,
+        available: dict[str, dict[str, Any]],
+    ) -> tuple[Any, int]:
+        """Replace cited evidence with trusted canonical fields and drop inventions."""
+
+        if not isinstance(raw, dict) or not isinstance(raw.get("evidence"), list):
+            return raw, 0
+        repaired: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        changes = 0
+        supplied_evidence = bool(raw["evidence"])
+        for item in raw["evidence"]:
+            citation = item.get("citation") if isinstance(item, dict) else None
+            canonical = available.get(str(citation)) if citation else None
+            if canonical is None or str(citation) in seen:
+                changes += 1
+                continue
+            seen.add(str(citation))
+            repaired.append(canonical)
+            if item != canonical:
+                changes += 1
+        if supplied_evidence and not repaired and len(available) == 1:
+            repaired.append(next(iter(available.values())))
+        if not changes:
+            return raw, 0
+        return {**raw, "evidence": repaired}, changes
 
     def invoke(
         self,
@@ -93,6 +180,14 @@ class AgentRunner:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        retrieval_contract = ""
+        if "repo-retrieval" in spec.allowed_tools:
+            retrieval_contract = (
+                "\n\nEvidence contract: a valid evidence item copies path, start_line, "
+                "end_line, citation, content_sha256, and repository_revision exactly "
+                "from one repo-retrieval match. A guessed citation or any changed "
+                "field is invalid; omit it rather than inventing evidence."
+            )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -103,7 +198,7 @@ class AgentRunner:
                     "Output contract: after any tool use, return exactly one JSON object "
                     "matching the following JSON Schema. Use the schema field names exactly, "
                     "do not add prose or alternate field names, and do not call more tools once "
-                    f"you have enough evidence. Schema: {output_schema}"
+                    f"you have enough evidence.{retrieval_contract} Schema: {output_schema}"
                 ),
             },
             {"role": "user", "content": json.dumps(node_context, ensure_ascii=False)},
@@ -113,42 +208,122 @@ class AgentRunner:
         total_prompt = 0
         total_completion = 0
         tool_rounds = 0
+        generations_used = 0
         tools_disabled = False
         schema_repaired = False
         retrieval_called = False
         retrieval_evidence: dict[str, dict[str, Any]] = {}
-        estimated_tokens = 0
-        estimated_cost = "0"
-        if pricing_catalog is not None and model_profile is not None:
-            estimated_tokens = model_profile.max_prompt_tokens + model_profile.max_completion_tokens
-            estimated_cost = pricing_catalog.cost(
-                model_profile.model,
-                model_profile.max_prompt_tokens,
-                model_profile.max_completion_tokens,
+        policy_version = int(execution_budget.get("policy_version", 1))
+        node_token_limit = (
+            spec.max_token_budget if policy_version >= 2 else None
+        )
+
+        def require_final(reason: str) -> None:
+            nonlocal tools_disabled
+            if tools_disabled:
+                return
+            tools_disabled = True
+            messages.append(
+                {
+                    "role": "user",
+                    "content": self._final_only_instruction(reason, output_schema),
+                }
             )
 
+        def estimate_reservation(
+            tool_schemas: list[dict[str, Any]],
+        ) -> tuple[int, str]:
+            if model_profile is None:
+                return 0, "0"
+            estimated_prompt_tokens = min(
+                model_profile.max_prompt_tokens,
+                self._estimate_prompt_tokens(
+                    messages,
+                    tool_schemas,
+                    output_schema,
+                ),
+            )
+            estimated_tokens = (
+                estimated_prompt_tokens + model_profile.max_completion_tokens
+            )
+            estimated_cost = "0"
+            if pricing_catalog is not None:
+                estimated_cost = pricing_catalog.cost(
+                    model_profile.model,
+                    estimated_prompt_tokens,
+                    model_profile.max_completion_tokens,
+                )
+            return estimated_tokens, estimated_cost
+
         while True:
+            if generations_used + 1 >= spec.max_generations:
+                require_final(
+                    "This is the final generation allowed for this agent invocation."
+                )
+            tool_schemas = (
+                []
+                if tools_disabled
+                else self.tools.registry.schemas(
+                    spec.allowed_tools,
+                    expose_runtime_fields=False,
+                )
+            )
+            estimated_tokens, estimated_cost = estimate_reservation(tool_schemas)
+            current_budget = ExecutionBudget.from_state_dict(budget)
+            global_tokens_used = (
+                current_budget.prompt_tokens_used
+                + current_budget.completion_tokens_used
+            )
+            node_tokens_used = total_prompt + total_completion
+            if (
+                not tools_disabled
+                and model_profile is not None
+                and policy_version >= 2
+            ):
+                needs_final_headroom = (
+                    global_tokens_used + (2 * estimated_tokens)
+                    > current_budget.max_total_tokens
+                )
+                if node_token_limit is not None:
+                    needs_final_headroom = needs_final_headroom or (
+                        node_tokens_used + (2 * estimated_tokens)
+                        > node_token_limit
+                    )
+                if needs_final_headroom:
+                    require_final(
+                        "The remaining token budget permits only a final response."
+                    )
+                    tool_schemas = []
+                    estimated_tokens, estimated_cost = estimate_reservation(
+                        tool_schemas
+                    )
+            if node_token_limit is not None:
+                self.budget_service.ensure_token_capacity(
+                    budget,
+                    tokens_used=node_tokens_used,
+                    estimated_tokens=estimated_tokens,
+                    max_tokens=node_token_limit,
+                    scope=f"{spec.agent_id} node",
+                )
             budget = self.budget_service.reserve_llm(
                 budget,
                 estimated_tokens=estimated_tokens,
                 estimated_cost=estimated_cost,
             )
             started = time.monotonic()
-            turn = tool_rounds + 1
+            turn = generations_used + 1
             try:
                 response = self.gateway.complete(
                     agent_id=spec.agent_id,
                     messages=messages,
-                    tools=(
-                        []
-                        if tools_disabled
-                        else self.tools.registry.schemas(
-                            spec.allowed_tools,
-                            expose_runtime_fields=False,
-                        )
-                    ),
+                    tools=tool_schemas,
                     output_model=output_model,
                     timeout_seconds=spec.timeout_seconds,
+                    max_completion_tokens=(
+                        model_profile.max_completion_tokens
+                        if model_profile is not None
+                        else None
+                    ),
                     node=node,
                     turn=turn,
                 )
@@ -156,6 +331,7 @@ class AgentRunner:
                 budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
                 setattr(exc, "execution_budget", budget)
                 raise
+            generations_used += 1
             budget = self.budget_service.settle_active_time(budget, time.monotonic() - started)
             total_prompt += response.usage.prompt_tokens
             total_completion += response.usage.completion_tokens
@@ -173,12 +349,23 @@ class AgentRunner:
                 reserved_cost=estimated_cost,
                 actual_cost=actual_cost,
             )
+            if node_token_limit is not None:
+                self.budget_service.ensure_token_capacity(
+                    budget,
+                    tokens_used=total_prompt + total_completion,
+                    estimated_tokens=0,
+                    max_tokens=node_token_limit,
+                    scope=f"{spec.agent_id} node",
+                )
             observation.update(
                 metadata={
-                    "turns": turn,
+                    "generations": generations_used,
+                    "max_generations": spec.max_generations,
                     "tool_rounds": tool_rounds,
                     "prompt_tokens": total_prompt,
                     "completion_tokens": total_completion,
+                    "node_token_budget": node_token_limit,
+                    "budget_policy_version": policy_version,
                 }
             )
 
@@ -188,16 +375,8 @@ class AgentRunner:
                     error.execution_budget = budget
                     raise error
                 if tool_rounds >= spec.max_tool_rounds:
-                    tools_disabled = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "The bounded tool-round limit has been reached. Do not call "
-                                "tools again. Using the evidence already returned, provide only "
-                                f"the final JSON object matching this schema: {output_schema}"
-                            ),
-                        }
+                    require_final(
+                        "The bounded tool-round limit has been reached."
                     )
                     continue
                 tool_rounds += 1
@@ -262,7 +441,18 @@ class AgentRunner:
                 continue
 
             try:
-                raw = json.loads(response.content or "")
+                raw = self._parse_json(response.content or "")
+                if retrieval_called:
+                    raw, repaired_evidence = self._repair_retrieval_evidence(
+                        raw,
+                        retrieval_evidence,
+                    )
+                    if repaired_evidence:
+                        observation.update(
+                            metadata={
+                                "repaired_evidence_items": repaired_evidence
+                            }
+                        )
                 structured = output_model.model_validate(raw)
                 self._validate_retrieval_evidence(
                     structured,
@@ -270,14 +460,18 @@ class AgentRunner:
                     available=retrieval_evidence,
                 )
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-                if schema_repaired:
+                if schema_repaired or generations_used >= spec.max_generations:
                     return AgentInvocation(
                         AgentResult(
                             status="error",
                             structured_output={},
                             summary="model output failed schema validation",
                             tool_call_refs=tool_refs,
-                            token_usage={"prompt": total_prompt, "completion": total_completion},
+                            token_usage={
+                                "prompt": total_prompt,
+                                "completion": total_completion,
+                                "total": total_prompt + total_completion,
+                            },
                             error={"code": "MODEL_OUTPUT_INVALID", "message": str(exc)},
                         ),
                         budget,
@@ -305,7 +499,11 @@ class AgentRunner:
                     structured_output=value,
                     summary=str(value.get("summary", spec.role)),
                     tool_call_refs=tool_refs,
-                    token_usage={"prompt": total_prompt, "completion": total_completion},
+                    token_usage={
+                        "prompt": total_prompt,
+                        "completion": total_completion,
+                        "total": total_prompt + total_completion,
+                    },
                     error=None,
                 ),
                 budget,

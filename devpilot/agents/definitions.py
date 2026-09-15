@@ -17,6 +17,8 @@ AGENT_SPECS = {
         allowed_tools=("project-context", "repo-retrieval"),
         output_schema="PlanDraft",
         model_profile="default",
+        max_generations=6,
+        max_token_budget=80_000,
     ),
     "diagnosis": AgentSpec(
         agent_id="diagnosis",

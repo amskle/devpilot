@@ -57,7 +57,8 @@ class RepoRetrievalInput(ToolInput):
     query: str = Field(min_length=1, max_length=2000)
     chunk_lines: int = Field(default=40, ge=5, le=200)
     overlap_lines: int = Field(default=10, ge=0, le=199)
-    max_chunks: int = Field(default=8, ge=1, le=50)
+    max_chunks: int = Field(default=5, ge=1, le=50)
+    max_chunks_per_file: int = Field(default=1, ge=1, le=5)
 
     @model_validator(mode="after")
     def validate_chunk_overlap(self):

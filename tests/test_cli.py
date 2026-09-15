@@ -26,6 +26,66 @@ def test_plan_history_command_accepts_task_id():
     assert args.task_id == "task"
 
 
+def test_task_create_accepts_explicit_budget_limits():
+    args = build_parser().parse_args(
+        [
+            "task",
+            "create",
+            "--repo",
+            "repo",
+            "--request",
+            "inspect",
+            "--max-total-tokens",
+            "250000",
+            "--max-llm-calls",
+            "30",
+        ]
+    )
+
+    assert args.max_total_tokens == 250_000
+    assert args.max_llm_calls == 30
+
+
+def test_task_create_passes_only_limit_overrides_to_runtime(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            pass
+
+        def create_task(self, repo, request, **kwargs):
+            captured.update({"repo": repo, "request": request, **kwargs})
+            return {"status": "COMPLETED_NO_CHANGES"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("devpilot.cli.TaskService", FakeService)
+
+    main(
+        [
+            "task",
+            "create",
+            "--repo",
+            str(tmp_path),
+            "--request",
+            "inspect",
+            "--max-total-tokens",
+            "250000",
+            "--max-tool-calls",
+            "80",
+        ]
+    )
+
+    assert captured["budget"].max_total_tokens == 250_000
+    assert captured["budget"].max_tool_calls == 80
+    assert captured["budget"].prompt_tokens_used == 0
+    assert "COMPLETED_NO_CHANGES" in capsys.readouterr().out
+
+
 def test_api_refuses_public_bind_with_default_development_token(
     tmp_path, monkeypatch
 ):

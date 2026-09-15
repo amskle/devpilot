@@ -75,6 +75,8 @@ python -m devpilot api
 
 创建任务会运行目标仓库的构建/测试代码，因此是单独的权限边界。管理员可以创建任务；普通主体必须在 `DEVPILOT_API_TOKENS` 对应对象中设置 `"task_creator": true`，且仓库路径必须位于 `DEVPILOT_API_REPOSITORY_ROOTS`。没有该权限的普通主体仍可访问和控制已归属自己的任务。
 
+`POST /api/tasks` 可选传入 `budget`，用于设置新任务的 `max_total_tokens`、`max_llm_calls`、`max_tool_calls`、`max_tool_retries`、`max_active_seconds` 等上限。只接受限制字段；Token、调用次数、成本等已使用量由运行时维护，不能从 API 注入。省略 `budget` 时使用策略 v2 默认值（总 Token 为 200,000），响应中的 `execution_budget.policy_version` 标识实际策略版本。
+
 ## 接口契约
 
 所有路径以 `/api` 为前缀。

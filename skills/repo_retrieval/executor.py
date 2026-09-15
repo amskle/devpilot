@@ -21,10 +21,12 @@ from skills.path_filter import IGNORED_DIRECTORIES, should_scan
 
 DEFAULT_CHUNK_LINES = 40
 DEFAULT_OVERLAP_LINES = 10
-DEFAULT_MAX_CHUNKS = 8
+DEFAULT_MAX_CHUNKS = 5
+DEFAULT_MAX_CHUNKS_PER_FILE = 1
 MIN_CHUNK_LINES = 5
 MAX_CHUNK_LINES = 200
 MAX_CHUNKS_LIMIT = 50
+MAX_CHUNKS_PER_FILE_LIMIT = 5
 MAX_SCANNED_FILES = 300
 MAX_TOTAL_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_CHUNKS = 4000
@@ -268,6 +270,9 @@ def run(inputs: dict) -> dict:
         chunk_lines = int(inputs.get("chunk_lines", DEFAULT_CHUNK_LINES))
         overlap_lines = int(inputs.get("overlap_lines", DEFAULT_OVERLAP_LINES))
         max_chunks = int(inputs.get("max_chunks", DEFAULT_MAX_CHUNKS))
+        max_chunks_per_file = int(
+            inputs.get("max_chunks_per_file", DEFAULT_MAX_CHUNKS_PER_FILE)
+        )
     except (TypeError, ValueError):
         return {"status": "error", "error": "chunk parameters must be integers"}
     if not MIN_CHUNK_LINES <= chunk_lines <= MAX_CHUNK_LINES:
@@ -279,14 +284,32 @@ def run(inputs: dict) -> dict:
         return {"status": "error", "error": "overlap_lines must be smaller than chunk_lines"}
     if not 1 <= max_chunks <= MAX_CHUNKS_LIMIT:
         return {"status": "error", "error": f"max_chunks must be between 1 and {MAX_CHUNKS_LIMIT}"}
+    if not 1 <= max_chunks_per_file <= MAX_CHUNKS_PER_FILE_LIMIT:
+        return {
+            "status": "error",
+            "error": (
+                "max_chunks_per_file must be between 1 and "
+                f"{MAX_CHUNKS_PER_FILE_LIMIT}"
+            ),
+        }
     query_terms = set(_tokenize(query))
     if not query_terms:
         return {"status": "error", "error": "query has no searchable terms"}
 
     chunks, coverage = _collect_chunks(repo, chunk_lines, overlap_lines)
     ranked = _rank_chunks(query_terms, chunks)
+    selected = []
+    selected_per_file: Counter[str] = Counter()
+    for item in ranked:
+        relative = item[1]
+        if selected_per_file[relative] >= max_chunks_per_file:
+            continue
+        selected.append(item)
+        selected_per_file[relative] += 1
+        if len(selected) >= max_chunks:
+            break
     matches = []
-    for score, relative, start, end, body in ranked[:max_chunks]:
+    for score, relative, start, end, body in selected:
         matched_terms = sorted(
             query_terms.intersection(
                 set(_tokenize(body)).union(_path_tokens(relative))
@@ -312,7 +335,8 @@ def run(inputs: dict) -> dict:
             "total_chunks": len(chunks),
             "chunk_lines": chunk_lines,
             "overlap_lines": overlap_lines,
-            "result_truncated": len(ranked) > max_chunks,
+            "max_chunks_per_file": max_chunks_per_file,
+            "result_truncated": len(ranked) > len(selected),
             "coverage": coverage,
             "matches": matches,
         },

@@ -18,6 +18,7 @@ export interface ArtifactRef {
 }
 
 export interface ExecutionBudget {
+  policy_version: number;
   max_iterations: number;
   max_plan_revisions: number;
   max_rollbacks: number;

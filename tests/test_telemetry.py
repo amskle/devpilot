@@ -147,7 +147,11 @@ def test_gateway_only_sends_langfuse_parameters_to_instrumented_sdk(monkeypatch,
 
     def create(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+        return SimpleNamespace(usage=SimpleNamespace(
+                                   prompt_tokens=5,
+                                   completion_tokens=3,
+                                   total_tokens=12,
+                               ),
                                choices=[SimpleNamespace(message=SimpleNamespace(content="{}", tool_calls=[]))])
 
     monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: traced)
@@ -155,10 +159,13 @@ def test_gateway_only_sends_langfuse_parameters_to_instrumented_sdk(monkeypatch,
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
     gateway = OpenAICompatibleGateway(model="test-model", api_key="test-model-key")
     response = gateway.complete(agent_id="planning", messages=[], tools=[],
-                                output_model=PlanDraft, timeout_seconds=10, node="planning", turn=1)
+                                output_model=PlanDraft, timeout_seconds=10,
+                                max_completion_tokens=4096, node="planning", turn=1)
     assert ("name" in calls[0]) is traced
+    assert calls[0]["max_completion_tokens"] == 4096
     assert response.usage.prompt_tokens == 5
-    assert response.usage.completion_tokens == 3
+    assert response.usage.completion_tokens == 7
+    assert response.usage.reported_total_tokens == 12
 
 
 def test_traced_graph_records_actual_task_model_and_final_state(tmp_path, monkeypatch):

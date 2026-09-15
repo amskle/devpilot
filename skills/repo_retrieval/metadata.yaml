@@ -1,10 +1,11 @@
 name: repo-retrieval
-version: 1.0.0
+version: 1.1.0
 description: 基于确定性词法检索返回仓库相关代码片段与引用位置
 input_schema:
   repo_path: string
   query: string
   max_chunks: integer
+  max_chunks_per_file: integer
   chunk_lines: integer
   overlap_lines: integer
 output_schema:
@@ -14,6 +15,7 @@ output_schema:
   total_chunks: integer
   chunk_lines: integer
   overlap_lines: integer
+  max_chunks_per_file: integer
   result_truncated: boolean
   coverage: object
   matches: array

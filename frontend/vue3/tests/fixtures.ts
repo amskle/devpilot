@@ -1,6 +1,7 @@
 import type { ExecutionBudget, ExecutionEvent, TaskState } from "@/domain/types";
 
 export const budget: ExecutionBudget = {
+  policy_version: 1,
   max_iterations: 3,
   max_plan_revisions: 2,
   max_rollbacks: 2,

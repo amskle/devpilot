@@ -783,6 +783,45 @@ def test_node_exception_is_normalized_and_checkpointed(tmp_path):
         service.close()
 
 
+def test_budget_failure_checkpoints_usage_from_all_completed_agent_rounds(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    gateway = ScriptedFakeModelGateway(
+        {
+            "planning": [
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=30,
+                    completion_tokens=10,
+                ),
+                ModelResponse.tools(
+                    [{"name": "project-context", "arguments": {}}],
+                    prompt_tokens=40,
+                    completion_tokens=20,
+                ),
+            ]
+        },
+        strict=False,
+    )
+    service = TaskService(data_dir=tmp_path / "data", gateway=gateway)
+    try:
+        state = service.create_task(
+            repo,
+            "inspect",
+            budget=ExecutionBudget(max_llm_calls=2),
+        )
+
+        assert state["status"] == TaskStatus.WAITING_HUMAN_INTERVENTION.value
+        assert state["latest_failure"]["category"] == "BUDGET"
+        assert state["latest_failure"]["error_code"] == "BUDGET_EXHAUSTED"
+        assert state["execution_budget"]["llm_calls_used"] == 2
+        assert state["execution_budget"]["tool_calls_used"] == 3
+        assert state["execution_budget"]["prompt_tokens_used"] == 70
+        assert state["execution_budget"]["completion_tokens_used"] == 30
+        assert service.get_state(state["task_id"]) == state
+    finally:
+        service.close()
+
+
 def test_patch_generation_no_change_required_pauses_for_human(tmp_path):
     repo = make_repo(tmp_path / "repo")
     gateway = ScriptedFakeModelGateway(

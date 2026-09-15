@@ -113,6 +113,10 @@ def test_openapi_documents_auth_examples_and_control_contract(tmp_path):
         assert "DevPilotBearer" in schema["components"]["securitySchemes"]
         create_schema = schema["components"]["schemas"]["CreateTaskRequest"]
         assert create_schema["properties"]["repo"]["examples"]
+        budget_schema = schema["components"]["schemas"]["TaskBudgetRequest"]
+        assert "max_total_tokens" in budget_schema["properties"]
+        assert budget_schema["properties"]["max_total_tokens"]["default"] == 200_000
+        assert "prompt_tokens_used" not in budget_schema["properties"]
         approve = schema["paths"]["/api/tasks/{task_id}/approve"]["post"]
         assert approve["summary"] == "Approve the exact pending Patch"
         assert "Idempotency-Key" in {
@@ -161,7 +165,15 @@ def test_task_creation_projection_resource_authorization_and_message_boundary(tm
             created = client.post(
                 "/api/tasks",
                 headers=ALICE_HEADERS,
-                json={"repo": str(repo), "request": "inspect repository", "revision": "HEAD"},
+                json={
+                    "repo": str(repo),
+                    "request": "inspect repository",
+                    "revision": "HEAD",
+                    "budget": {
+                        "max_total_tokens": 250_000,
+                        "max_llm_calls": 30,
+                    },
+                },
             )
             assert created.status_code == 201, created.text
             task = created.json()
@@ -169,6 +181,9 @@ def test_task_creation_projection_resource_authorization_and_message_boundary(tm
             assert task["status"] == TaskStatus.COMPLETED_NO_CHANGES.value
             assert task["model_profile"]["model"] == "task-model"
             assert task["request"] == "inspect repository"
+            assert task["execution_budget"]["max_total_tokens"] == 250_000
+            assert task["execution_budget"]["max_llm_calls"] == 30
+            assert task["execution_budget"]["policy_version"] == 2
 
             assert client.get(f"/api/tasks/{task_id}", headers=BOB_HEADERS).status_code == 404
             listed = client.get("/api/tasks", headers=ALICE_HEADERS).json()

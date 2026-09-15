@@ -61,13 +61,14 @@ class WorkspaceRef(StrictModel):
 
 
 class ExecutionBudget(StrictModel):
+    policy_version: int = Field(default=1, ge=1)
     max_iterations: int = Field(default=3, ge=0)
     max_plan_revisions: int = Field(default=2, ge=0)
     max_rollbacks: int = Field(default=2, ge=0)
     max_llm_calls: int = Field(default=20, ge=0)
     max_tool_calls: int = Field(default=40, ge=0)
     max_tool_retries: int = Field(default=8, ge=0)
-    max_total_tokens: int = Field(default=100_000, ge=0)
+    max_total_tokens: int = Field(default=200_000, ge=0)
     max_cost: str | None = None
     cost_currency: str = "USD"
     max_active_seconds: int = Field(default=1800, ge=0)
@@ -110,6 +111,8 @@ class AgentSpec(StrictModel):
     output_schema: str
     model_profile: str
     max_tool_rounds: int = 4
+    max_generations: int = Field(default=6, ge=1)
+    max_token_budget: int | None = Field(default=None, ge=1)
     timeout_seconds: int = 120
 
 

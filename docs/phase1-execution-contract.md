@@ -57,7 +57,7 @@ Skill 扫描器只过滤仓库内部的隐藏路径和构建目录；不得因�
 - `metadata.yaml` 与 `SKILL.md` 继续作为可读 Skill 描述；代码中的 Pydantic `ToolSpec` 是可执行 Schema、权限、幂等和重试语义的来源。`validate_skill_metadata()` 检查名称一致性。
 - `workspace_id` 是 AgentRunner 绑定的可信运行时字段，不暴露给模型选择。Agent 工具 Schema 隐藏该字段，执行前由 Runner 注入当前 Workspace ID；ToolExecutor 仍执行严格一致性校验，确定性节点继续显式携带 Workspace ID。
 - Pricing Catalog 默认读取 `DEVPILOT_DATA_DIR/pricing/catalog.json`，仓库不内置真实价格。任务创建时始终把所选模型和当时的价格表固化为内容寻址快照，使 per-task 模型在审批、恢复和重规划后保持不变；`max_cost=None` 时不要求所选模型存在价格。注入自定义 Gateway 时，per-task 模型覆盖必须同时提供 `gateway_factory`，避免模型配置与真实调用不一致。
-- 启用 `max_cost` 时，每次模型调用前按 `ModelProfile` 最大 Prompt/Completion 用量预留费用，响应后按实际 Token 核算并回补；配置费用上限但模型无价格时在创建工作区前失败，失败调用保留已预留预算。模型和工具的实际执行时间按整秒向上累计，达到 `max_active_seconds` 后不再发起下一次调用。
+- 预算策略 v2 的任务默认总 Token 上限为 200,000；Planning 另有 80,000 Token 和 6 次 Generation 的节点上限。每次调用前按真实 Messages、Tool Schema 与输出 Schema 动态估算 Prompt，并把 `ModelProfile.max_completion_tokens` 作为 `max_completion_tokens` 传给 Provider，使可见输出与推理 Token 共同受 4,096 的默认硬限制。工具仍可用时，Runner 会额外为一次无工具最终 JSON 生成保留容量。响应后以 Provider 的 `total_tokens` 校验 Prompt/Completion 汇总并执行硬上限核算。启用 `max_cost` 时用同一动态估算预留费用并在响应后按实际用量回补；配置费用上限但模型无价格时在创建工作区前失败。所有预算预留异常都携带当前已结算预算，避免一个 Agent 节点内已成功的模型与工具调用因后续预留失败而丢失账目。旧任务缺少 `policy_version` 时按 v1 读取并保留原总预算；模型和工具的实际执行时间按整秒向上累计。
 - Git worktree 固定使用 `DevPilot <devpilot@local>` 身份提交，不依赖机器全局 Git 配置。
 - Patch 状态按 `PROPOSED → WAITING_RISK_APPROVAL/APPROVED → APPLIED → VERIFIED/INVALIDATED` 推进。每次应用新 Patch 前拒绝意外的 tracked 改动，并清理上一轮验证留下的未跟踪构建产物，防止缓存进入 Patch 提交或遮蔽新源码。
 - Phase 1 的 `ToolExecutor` 仅在当前进程内按 `operation_id` 去重；进程重启后的持久工具幂等留待可靠任务执行存储补齐。控制命令幂等键已持久化到 SQLite，不受该限制。非瞬时工具错误保留原始错误码（例如 `REPLACEMENT_TARGET_NOT_FOUND`）；只有瞬时错误实际耗尽重试后才归一为 `TOOL_RETRY_EXHAUSTED`。

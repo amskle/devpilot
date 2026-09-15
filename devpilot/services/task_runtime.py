@@ -413,7 +413,9 @@ class TaskRuntimeCore:
             raise ValueError("revision must not be empty")
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         run_id = f"run_{uuid.uuid4().hex[:16]}"
-        selected_budget = budget or ExecutionBudget()
+        selected_budget = (budget or ExecutionBudget()).model_copy(
+            update={"policy_version": 2}
+        )
         selected_model = (model or self.model_name).strip()
         if not selected_model:
             raise ValueError("model must not be empty")

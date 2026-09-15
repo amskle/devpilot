@@ -21,3 +21,4 @@ change2.md
 /.test_tmp/
 /_pt*/
 /tmp*/
+.pytest_basetemp/
